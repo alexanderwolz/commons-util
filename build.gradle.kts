@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "de.alexanderwolz"
-version = "1.4.7"
+version = "1.4.8"
 
 repositories {
     mavenCentral()
@@ -31,11 +31,14 @@ kotlin {
 
 dependencies {
     api("de.alexanderwolz:commons-log:1.3.1")
+
     compileOnly("org.bouncycastle:bcpkix-jdk18on:1.81")
+    compileOnly("jakarta.persistence:jakarta.persistence-api:3.1.0")
 
     testImplementation(kotlin("test"))
     testImplementation("org.slf4j:slf4j-simple:2.0.17")
     testImplementation("org.bouncycastle:bcpkix-jdk18on:1.81")
+    testImplementation("jakarta.persistence:jakarta.persistence-api:3.1.0")
 }
 
 tasks.test {
