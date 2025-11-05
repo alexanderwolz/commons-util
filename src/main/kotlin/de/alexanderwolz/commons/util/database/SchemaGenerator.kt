@@ -9,13 +9,6 @@ import java.lang.reflect.Modifier
 import java.time.LocalDateTime
 import kotlin.jvm.javaClass
 
-fun main() {
-    val basePackage = SchemaGenerator::class.java.packageName + ".model"
-    val baseDir = File(System.getProperty("user.dir") ?: "").absoluteFile
-    val outDir = File(baseDir, "src/main/resources/migration")
-    SchemaGenerator(basePackage, outDir).generate()
-}
-
 class SchemaGenerator(private val basePackage: String, private val outDir: File) {
 
     private val logger = Logger(javaClass)

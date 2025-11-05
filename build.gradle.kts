@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "de.alexanderwolz"
-version = "1.4.8"
+version = "1.4.9"
 
 repositories {
     mavenCentral()
