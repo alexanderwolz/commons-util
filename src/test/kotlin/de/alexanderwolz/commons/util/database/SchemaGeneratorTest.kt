@@ -18,8 +18,10 @@ class SchemaGeneratorTest {
         generator.generate()
 
         val expectedTableName = "sample"
+        val migrationFile = File(tmpDir, "migration/database/V1__create_${expectedTableName}_table.sql")
         assertTrue { tmpDir.listFiles()?.isNotEmpty() == true }
-        assertTrue { File(tmpDir, "migration/database/V1__create_${expectedTableName}_table.sql").exists() }
+        assertTrue { migrationFile.exists() }
+        println(migrationFile.readText())
     }
 
 }

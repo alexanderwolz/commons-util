@@ -139,16 +139,17 @@ class SchemaGenerator(private val basePackage: String, private val outDir: File)
             field.findAnnotationOnFieldOrGetter<Id>(entity) != null
         } ?: return "BIGINT"  // Fallback
 
+        val column = idField.findAnnotationOnFieldOrGetter<Column>(entity)
         val gen = idField.findAnnotationOnFieldOrGetter<GeneratedValue>(entity)
         if (gen != null) {
             return when (gen.strategy) {
                 GenerationType.UUID -> "UUID"
                 GenerationType.IDENTITY -> "BIGINT"
-                else -> sqlType(idField)
+                else -> sqlType(idField, column)
             }
         }
 
-        return sqlType(idField)
+        return sqlType(idField, column)
     }
 
     private fun generateCreateTableSql(entity: Class<*>, tableName: String): String {
@@ -156,23 +157,23 @@ class SchemaGenerator(private val basePackage: String, private val outDir: File)
         val maxColNameLength = 40 // für Alignment
 
         allPersistentFields(entity).forEach { field ->
+            val column = field.findAnnotationOnFieldOrGetter<Column>(entity)
             when {
                 field.findAnnotationOnFieldOrGetter<Id>(entity) != null -> {
-                    val name = field.findAnnotationOnFieldOrGetter<Column>(entity)?.name
-                        ?.takeIf { it.isNotBlank() } ?: toSnakeCase(field.name)
+                    val name = column?.name?.takeIf { it.isNotBlank() } ?: toSnakeCase(field.name)
                     val gen = field.findAnnotationOnFieldOrGetter<GeneratedValue>(entity)
                     val def = if (gen != null) {
                         when (gen.strategy) {
                             GenerationType.UUID -> formatColumn(name, "UUID", "PRIMARY KEY", maxColNameLength)
                             GenerationType.IDENTITY -> formatColumn(name, "BIGSERIAL", "PRIMARY KEY", maxColNameLength)
-                            else -> formatColumn(name, sqlType(field), "PRIMARY KEY", maxColNameLength)
+                            else -> formatColumn(name, sqlType(field, column), "PRIMARY KEY", maxColNameLength)
                         }
                     } else {
                         // fallback by type
                         if (field.type.simpleName == "UUID")
                             formatColumn(name, "UUID", "PRIMARY KEY", maxColNameLength)
                         else
-                            formatColumn(name, sqlType(field), "PRIMARY KEY", maxColNameLength)
+                            formatColumn(name, sqlType(field, column), "PRIMARY KEY", maxColNameLength)
                     }
                     cols.add(def)
                 }
@@ -197,12 +198,11 @@ class SchemaGenerator(private val basePackage: String, private val outDir: File)
                 }
 
                 else -> {
-                    val col = field.findAnnotationOnFieldOrGetter<Column>(entity)
-                    val name = col?.name?.takeIf { it.isNotBlank() } ?: toSnakeCase(field.name)
-                    val nullable = col?.nullable ?: true
-                    val unique = col?.unique ?: false
-                    val length = col?.length ?: 255
-                    val type = sqlType(field, length)
+                    val column = field.findAnnotationOnFieldOrGetter<Column>(entity)
+                    val name = column?.name?.takeIf { it.isNotBlank() } ?: toSnakeCase(field.name)
+                    val nullable = column?.nullable ?: true
+                    val unique = column?.unique ?: false
+                    val type = sqlType(field, column)
 
                     val constraints = buildList {
                         if (!nullable) add("NOT NULL")
@@ -254,17 +254,17 @@ class SchemaGenerator(private val basePackage: String, private val outDir: File)
 
         type.declaredFields.filter {
             !it.isSynthetic && !Modifier.isStatic(it.modifiers)
-        }.forEach { f ->
-            val overrideCol = overrides[f.name]
-            val columnAnn = overrideCol ?: f.getAnnotation(Column::class.java)
+        }.forEach { field ->
+            val overrideCol = overrides[field.name]
+            val columnAnn = overrideCol ?: field.getAnnotation(Column::class.java)
             val name = when {
                 overrideCol != null && overrideCol.name.isNotBlank() -> overrideCol.name
                 columnAnn != null && columnAnn.name.isNotBlank() -> columnAnn.name
-                else -> prefix + toSnakeCase(f.name)
+                else -> prefix + toSnakeCase(field.name)
             }
             val nullable = columnAnn?.nullable ?: true
             val length = columnAnn?.length ?: 255
-            val sqlType = sqlType(f, length)
+            val sqlType = sqlType(field, columnAnn)
             val constraints = if (!nullable) "NOT NULL" else ""
             cols.add(formatColumn(name, sqlType, constraints, maxLength))
         }
@@ -339,48 +339,56 @@ class SchemaGenerator(private val basePackage: String, private val outDir: File)
         return out.distinct()
     }
 
-    private fun sqlType(field: Field, length: Int = 255): String = when (field.type.simpleName) {
-        // String types
-        "String" -> "VARCHAR($length)"
+    private fun sqlType(field: Field, column: Column?): String {
 
-        // Date/Time types
-        "LocalDateTime", "Instant" -> "TIMESTAMP"
-        "LocalDate" -> "DATE"
-        "LocalTime" -> "TIME"
-        "ZonedDateTime", "OffsetDateTime" -> "TIMESTAMP WITH TIME ZONE"
-        "Duration" -> "BIGINT"  // Milliseconds
-        "Period" -> "VARCHAR(50)"  // ISO-8601 format
-
-        // Boolean types
-        "Boolean", "boolean" -> "BOOLEAN"
-
-        // Integer types
-        "Byte", "byte" -> "SMALLINT"
-        "Short", "short" -> "SMALLINT"
-        "Integer", "int" -> "INTEGER"
-        "Long", "long" -> "BIGINT"
-
-        // Floating point types
-        "Float", "float" -> "REAL"
-        "Double", "double" -> "DOUBLE PRECISION"
-        "BigDecimal" -> {
-            val col = field.findAnnotationOnFieldOrGetter<Column>(field.declaringClass)
-            val precision = col?.precision ?: 19
-            val scale = col?.scale ?: 2
-            "DECIMAL($precision,$scale)"
+        column?.columnDefinition?.takeIf { it.isNotBlank() }?.let {
+            return it.uppercase()
         }
 
-        // Other types
-        "UUID" -> "UUID"
-        "byte[]", "Byte[]" -> "BYTEA"
-        "URL" -> "VARCHAR(2048)"
-        "URI" -> "VARCHAR(2048)"
+        val length = column?.length ?: 255
 
-        // JSON types //TODO PostgreSQL vs MariaDB JSON
-        "JsonNode" -> "JSONB"
+        return when (field.type.simpleName) {
+            // String types
+            "String" -> "VARCHAR($length)"
 
-        // Enum and fallback
-        else -> if (field.type.isEnum) "VARCHAR(50)" else "VARCHAR($length)"
+            // Date/Time types
+            "LocalDateTime", "Instant" -> "TIMESTAMP"
+            "LocalDate" -> "DATE"
+            "LocalTime" -> "TIME"
+            "ZonedDateTime", "OffsetDateTime" -> "TIMESTAMP WITH TIME ZONE"
+            "Duration" -> "BIGINT"  // Milliseconds
+            "Period" -> "VARCHAR(50)"  // ISO-8601 format
+
+            // Boolean types
+            "Boolean", "boolean" -> "BOOLEAN"
+
+            // Integer types
+            "Byte", "byte" -> "SMALLINT"
+            "Short", "short" -> "SMALLINT"
+            "Integer", "int" -> "INTEGER"
+            "Long", "long" -> "BIGINT"
+
+            // Floating point types
+            "Float", "float" -> "REAL"
+            "Double", "double" -> "DOUBLE PRECISION"
+            "BigDecimal" -> {
+                val col = field.findAnnotationOnFieldOrGetter<Column>(field.declaringClass)
+                val precision = col?.precision ?: 19
+                val scale = col?.scale ?: 2
+                "DECIMAL($precision,$scale)"
+            }
+
+            // Other types
+            "UUID" -> "UUID"
+            "byte[]", "Byte[]" -> "BYTEA"
+            "URL" -> "VARCHAR(2048)"
+            "URI" -> "VARCHAR(2048)"
+
+            "JsonNode" -> "JSONB"
+
+            // Enum and fallback
+            else -> if (field.type.isEnum) "VARCHAR(50)" else "VARCHAR($length)"
+        }
     }
 
     private fun getTableName(clazz: Class<*>): String =
