@@ -342,6 +342,7 @@ class SchemaGenerator(private val basePackage: String, private val outDir: File)
     private fun sqlType(field: Field, column: Column?): String {
 
         column?.columnDefinition?.takeIf { it.isNotBlank() }?.let {
+            //if it has a column definition, take it
             return it.uppercase()
         }
 
