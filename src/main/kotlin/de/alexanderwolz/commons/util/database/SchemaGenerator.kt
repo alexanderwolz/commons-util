@@ -440,27 +440,35 @@ class SchemaGenerator(
             return sqlType(idField, col)
         }
 
-
         fun generateUuidExtensionSetup(): String = when (uuidType) {
+
             UUIDType.UUID_V7 ->
                 buildString {
-                    appendLine("-- Setup UUID v7 (pgcrypto)")
+                    appendLine("-- Setup UUID v7 (pgcrypto + idempotent function creation)")
                     appendLine("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
                     appendLine()
-                    appendLine("CREATE FUNCTION IF NOT EXISTS public.uuid_generate_v7()")
-                    appendLine("RETURNS UUID AS $$")
-                    appendLine("DECLARE")
-                    appendLine("    unix_ts_ms BIGINT;")
-                    appendLine("    uuid_bytes BYTEA;")
+                    appendLine("DO $$")
                     appendLine("BEGIN")
-                    appendLine("    unix_ts_ms := (EXTRACT(EPOCH FROM CLOCK_TIMESTAMP()) * 1000)::BIGINT;")
-                    appendLine("    uuid_bytes := public.gen_random_bytes(16);")
-                    appendLine("    uuid_bytes := OVERLAY(uuid_bytes PLACING substring(int8send(unix_ts_ms) FROM 3) FROM 1 FOR 6);")
-                    appendLine("    uuid_bytes := SET_BYTE(uuid_bytes, 6, (GET_BYTE(uuid_bytes, 6) & 15) | 112);")
-                    appendLine("    uuid_bytes := SET_BYTE(uuid_bytes, 8, (GET_BYTE(uuid_bytes, 8) & 63) | 128);")
-                    appendLine("    RETURN encode(uuid_bytes, 'hex')::UUID;")
-                    appendLine("END;")
-                    appendLine("$$ LANGUAGE plpgsql VOLATILE;")
+                    appendLine("    IF NOT EXISTS (")
+                    appendLine("        SELECT 1 FROM pg_proc WHERE proname = 'uuid_generate_v7'")
+                    appendLine("    ) THEN")
+                    appendLine("        CREATE FUNCTION public.uuid_generate_v7()")
+                    appendLine($$"        RETURNS UUID AS $fn$")
+                    appendLine("        DECLARE")
+                    appendLine("            unix_ts_ms BIGINT;")
+                    appendLine("            uuid_bytes BYTEA;")
+                    appendLine("        BEGIN")
+                    appendLine("            unix_ts_ms := (EXTRACT(EPOCH FROM CLOCK_TIMESTAMP()) * 1000)::BIGINT;")
+                    appendLine("            uuid_bytes := public.gen_random_bytes(16);")
+                    appendLine("            uuid_bytes := OVERLAY(uuid_bytes PLACING substring(int8send(unix_ts_ms) FROM 3) FROM 1 FOR 6);")
+                    appendLine("            uuid_bytes := SET_BYTE(uuid_bytes, 6, (GET_BYTE(uuid_bytes, 6) & 15) | 112);")
+                    appendLine("            uuid_bytes := SET_BYTE(uuid_bytes, 8, (GET_BYTE(uuid_bytes, 8) & 63) | 128);")
+                    appendLine("            RETURN encode(uuid_bytes, 'hex')::UUID;")
+                    appendLine("        END;")
+                    appendLine($$"        $fn$ LANGUAGE plpgsql VOLATILE;")
+                    appendLine("    END IF;")
+                    appendLine("END")
+                    appendLine("$$;")
                 }
 
             UUIDType.UUID_V4 ->
