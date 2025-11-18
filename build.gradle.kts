@@ -39,6 +39,9 @@ dependencies {
     testImplementation("org.slf4j:slf4j-simple:2.0.17")
     testImplementation("org.bouncycastle:bcpkix-jdk18on:1.81")
     testImplementation("jakarta.persistence:jakarta.persistence-api:3.1.0")
+    testImplementation("com.fasterxml.jackson.core:jackson-databind:2.17.0")
+    testImplementation("com.fasterxml.jackson.core:jackson-core:2.17.0")
+    testImplementation("com.fasterxml.jackson.core:jackson-annotations:2.17.0")
 }
 
 tasks.test {
