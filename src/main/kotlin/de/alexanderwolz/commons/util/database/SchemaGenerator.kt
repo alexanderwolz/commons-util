@@ -445,7 +445,7 @@ class SchemaGenerator(
             UUIDType.UUID_V7 ->
                 buildString {
                     appendLine("-- Setup UUID v7 (pgcrypto + idempotent function creation)")
-                    appendLine("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+                    appendLine("CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA public;")
                     appendLine()
                     appendLine("DO $$")
                     appendLine("BEGIN")
@@ -474,7 +474,7 @@ class SchemaGenerator(
             UUIDType.UUID_V4 ->
                 listOf(
                     "-- Setup UUID v4",
-                    "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";"
+                    "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\" SCHEMA public;"
                 ).joinToString("\n")
         }
 
