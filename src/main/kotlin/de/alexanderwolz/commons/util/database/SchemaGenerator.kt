@@ -125,7 +125,10 @@ class SchemaGenerator(
             .map { it.trim().removeSuffix(",") }
             .filter { it.isNotBlank() }
 
-        val aligned = alignSqlColumns(cleanBody).map { "$it," }
+        val aligned = alignSqlColumns(cleanBody).toMutableList()
+        aligned.forEachIndexed { i, _ ->
+            aligned[i] = if (i == aligned.lastIndex) aligned[i] else aligned[i] + ","
+        }
 
         return (header + aligned + footer)
             .joinToString("\n")
@@ -286,6 +289,7 @@ class SchemaGenerator(
             "UUID" -> "CHAR(36)"
             "URL", "URI" -> "VARCHAR(2048)"
             "JsonNode" -> "JSON"
+
             else -> if (field.type.isEnum) "VARCHAR(50)" else "VARCHAR($length)"
         }
     }
@@ -604,7 +608,8 @@ class SchemaGenerator(
                 }
             }
 
-            return out.distinct()
+            return out.distinctBy { it.substringAfter("CREATE").substringBefore("(").trim() }
+
         }
     }
 

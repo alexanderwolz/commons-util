@@ -6,6 +6,6 @@ import jakarta.persistence.Embeddable
 
 @Embeddable
 data class Settings(
-    @Column(columnDefinition = "JSONB")
+    @Column
     val data: JsonNode? = null
 )

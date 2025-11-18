@@ -46,7 +46,7 @@ class SampleEntity(
     @Embedded
     val address: Address = Address("street", "city"),
 
-    @Column(columnDefinition = "JSONB")
+    @Column
     val json: JsonNode? = null,
 
     @Column(nullable = false)
