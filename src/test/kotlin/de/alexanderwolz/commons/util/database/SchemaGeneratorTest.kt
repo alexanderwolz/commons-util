@@ -22,9 +22,10 @@ class SchemaGeneratorTest {
         val outDir = File(tmpDir, "migration_${db}_${uuid}")
         val generator = SchemaGenerator(entityPackage, outDir, db, uuid)
         generator.generate()
-        return outDir.also {
-            File(it, schemaDirName).listFiles()?.forEach { file -> println("\n#####\n${file.readText()}\n#####\n") }
-        }
+        return outDir
+        //.also {
+        //File(it, schemaDirName).listFiles()?.forEach { file -> println("\n#####\n${file.readText()}\n#####\n") }
+        //}
     }
 
     @Test

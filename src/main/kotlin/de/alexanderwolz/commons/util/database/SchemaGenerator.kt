@@ -391,15 +391,16 @@ class SchemaGenerator(
 
             val body = cols.joinToString(",\n") { it.toSql(maxName, maxType) }
 
-            return """
-                -- create_${tableName}_table
-                -- Entity: ${entity.simpleName}
-                -- Database: $databaseType
-                
-                CREATE TABLE $tableName (
-                $body
-                );
-            """.trimIndent()
+            return buildString {
+                appendLine("-- create_${tableName}_table")
+                appendLine("-- Entity: ${entity.simpleName} [${entity.name}]")
+                appendLine("-- Database: $databaseType")
+                appendLine()
+                appendLine("CREATE TABLE $tableName (")
+                append(body)
+                appendLine()
+                appendLine(");")
+            }
         }
 
         private fun getIdType(entityClass: Class<*>): String {
@@ -441,30 +442,32 @@ class SchemaGenerator(
 
 
         fun generateUuidExtensionSetup(): String = when (uuidType) {
-            UUIDType.UUID_V7 -> """
-                -- Setup UUID v7 (pgcrypto)
-                CREATE EXTENSION IF NOT EXISTS pgcrypto;
-                
-                CREATE OR REPLACE FUNCTION uuid_generate_v7()
-                RETURNS UUID AS $$
-                DECLARE
-                    unix_ts_ms BIGINT;
-                    uuid_bytes BYTEA;
-                BEGIN
-                    unix_ts_ms := (EXTRACT(EPOCH FROM CLOCK_TIMESTAMP()) * 1000)::BIGINT;
-                    uuid_bytes := gen_random_bytes(16);
-                    uuid_bytes := OVERLAY(uuid_bytes PLACING substring(int8send(unix_ts_ms) FROM 3) FROM 1 FOR 6);
-                    uuid_bytes := SET_BYTE(uuid_bytes, 6, (GET_BYTE(uuid_bytes, 6) & 15) | 112);
-                    uuid_bytes := SET_BYTE(uuid_bytes, 8, (GET_BYTE(uuid_bytes, 8) & 63) | 128);
-                    RETURN encode(uuid_bytes, 'hex')::UUID;
-                END;
-                $$ LANGUAGE plpgsql VOLATILE;
-            """.trimIndent()
+            UUIDType.UUID_V7 ->
+                buildString {
+                    appendLine("-- Setup UUID v7 (pgcrypto)")
+                    appendLine("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+                    appendLine()
+                    appendLine("CREATE OR REPLACE FUNCTION uuid_generate_v7()")
+                    appendLine("RETURNS UUID AS \$\$")
+                    appendLine("DECLARE")
+                    appendLine("    unix_ts_ms BIGINT;")
+                    appendLine("    uuid_bytes BYTEA;")
+                    appendLine("BEGIN")
+                    appendLine("    unix_ts_ms := (EXTRACT(EPOCH FROM CLOCK_TIMESTAMP()) * 1000)::BIGINT;")
+                    appendLine("    uuid_bytes := gen_random_bytes(16);")
+                    appendLine("    uuid_bytes := OVERLAY(uuid_bytes PLACING substring(int8send(unix_ts_ms) FROM 3) FROM 1 FOR 6);")
+                    appendLine("    uuid_bytes := SET_BYTE(uuid_bytes, 6, (GET_BYTE(uuid_bytes, 6) & 15) | 112);")
+                    appendLine("    uuid_bytes := SET_BYTE(uuid_bytes, 8, (GET_BYTE(uuid_bytes, 8) & 63) | 128);")
+                    appendLine("    RETURN encode(uuid_bytes, 'hex')::UUID;")
+                    appendLine("END;")
+                    appendLine("\$\$ LANGUAGE plpgsql VOLATILE;")
+                }
 
-            UUIDType.UUID_V4 -> """
-                -- Setup UUID v4
-                CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-            """.trimIndent()
+            UUIDType.UUID_V4 ->
+                listOf(
+                    "-- Setup UUID v4",
+                    "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";"
+                ).joinToString("\n")
         }
 
         private fun resolveEmbeddedColumns(field: Field): List<ColumnDef> {
@@ -530,14 +533,14 @@ class SchemaGenerator(
                     val deleteRule = if (nullable) "SET NULL" else "CASCADE"
 
                     out.add(
-                        """
-                        -- Foreign key: $table.$colName -> $refTable.id
-                        ALTER TABLE $table
-                            ADD CONSTRAINT $fkName
-                            FOREIGN KEY ($colName)
-                            REFERENCES $refTable(id)
-                            ON DELETE $deleteRule;
-                        """.trimIndent()
+                        buildString {
+                            appendLine("-- Foreign key: $table.$colName -> $refTable.id")
+                            appendLine("ALTER TABLE $table")
+                            appendLine("    ADD CONSTRAINT $fkName")
+                            appendLine("    FOREIGN KEY ($colName)")
+                            appendLine("    REFERENCES $refTable(id)")
+                            appendLine("    ON DELETE $deleteRule;")
+                        }
                     )
                 }
             }
@@ -561,10 +564,12 @@ class SchemaGenerator(
                     }
                     val unique = if (idx.unique) "UNIQUE " else ""
                     out.add(
-                        """
-                        -- Index on $table(${idx.columnList})
-                        CREATE ${unique}INDEX $name ON $table (${idx.columnList});
-                        """.trimIndent()
+                        buildString {
+                            appendLine("-- Index on $table(${idx.columnList})")
+                            append("CREATE ")
+                            append(unique)
+                            append("INDEX $name ON $table (${idx.columnList});")
+                        }
                     )
                 }
 
@@ -585,10 +590,10 @@ class SchemaGenerator(
                             } ?: false
                         if (!custom) {
                             out.add(
-                                """
-                                -- Index on foreign key: $table.$col
-                                CREATE INDEX idx_${table}_${col} ON $table ($col);
-                                """.trimIndent()
+                                buildString {
+                                    appendLine("-- Index on foreign key: $table.$col")
+                                    appendLine("CREATE INDEX idx_${table}_${col} ON $table ($col);")
+                                }
                             )
                         }
                         return@forEach
@@ -599,10 +604,10 @@ class SchemaGenerator(
                     val name = colAnn?.name?.ifBlank { null } ?: toSnakeCase(f.name)
                     if (name in listOf("email", "username", "subject", "code")) {
                         out.add(
-                            """
-                            -- Lookup index on $table.$name
-                            CREATE INDEX idx_${table}_${name} ON $table ($name);
-                            """.trimIndent()
+                            buildString {
+                                appendLine("-- Lookup index on $table.$name")
+                                appendLine("CREATE INDEX idx_${table}_${name} ON $table ($name);")
+                            }
                         )
                     }
                 }
