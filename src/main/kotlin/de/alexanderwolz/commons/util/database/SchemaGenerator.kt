@@ -61,42 +61,109 @@ class SchemaGenerator(
         val fkGen = ForeignKeyGenerator()
         val idxGen = IndexGenerator()
 
+        // UUIDv7 extension for Postgres
         if (databaseType == DatabaseType.POSTGRES && uuidType == UUIDType.UUID_V7) {
             val usesUuid = entities.any { it.idField() != null }
             if (usesUuid) {
                 val f = File(target, "V0__setup_uuid_extension.sql")
-                f.writeText(tableGen.generateUuidExtensionSetup())
+                val sql = tableGen.generateUuidExtensionSetup()
+                f.writeText(formatPlainSql(sql))
                 logger.info { "Created: ${f.parentFile.name}/${f.name}" }
             }
         }
 
+        // CREATE TABLES
         entities.forEachIndexed { i, e ->
             val table = getTableName(e)
             val f = File(target, "V${i + 1}__create_${table}_table.sql")
-            f.writeText(tableGen.generateCreateTableSql(e, table))
+
+            val rawSql = tableGen.generateCreateTableSql(e, table)
+            val formatted = formatCreateTableSql(rawSql)
+
+            f.writeText(formatted)
             logger.info { "Created: ${f.parentFile.name}/${f.name}" }
         }
 
+        // FOREIGN KEYS
         val fkList = fkGen.generateAllForeignKeys(entities)
         if (fkList.isNotEmpty()) {
             val f = File(target, "V${entities.size + 1}__add_foreign_keys.sql")
-            f.writeText(
+            val sql =
                 "-- Foreign Keys generated ${LocalDateTime.now()}\n" +
                         fkList.joinToString("\n\n")
-            )
+
+            f.writeText(formatPlainSql(sql))
             logger.info { "Created: ${f.parentFile.name}/${f.name}" }
         }
 
+        // INDEXES
         val idxList = idxGen.generateAllIndexes(entities)
         if (idxList.isNotEmpty()) {
             val f = File(target, "V${entities.size + 2}__add_indexes.sql")
-            f.writeText(
+            val sql =
                 "-- Indexes generated ${LocalDateTime.now()}\n" +
                         idxList.joinToString("\n\n")
-            )
+
+            f.writeText(formatPlainSql(sql))
             logger.info { "Created: ${f.parentFile.name}/${f.name}" }
         }
     }
+
+    private fun formatCreateTableSql(sql: String): String {
+        val lines = sql.trim().lines()
+
+        val startIdx = lines.indexOfFirst { it.contains("(") }
+        val endIdx = lines.indexOfLast { it.trim() == ");" }
+
+        if (startIdx == -1 || endIdx == -1) return sql.trim() + "\n"
+
+        val header = lines.subList(0, startIdx + 1)
+        val body = lines.subList(startIdx + 1, endIdx)
+        val footer = lines.subList(endIdx, lines.size)
+
+        val cleanBody = body
+            .map { it.trim().removeSuffix(",") }
+            .filter { it.isNotBlank() }
+
+        val aligned = alignSqlColumns(cleanBody).map { "$it," }
+
+        return (header + aligned + footer)
+            .joinToString("\n")
+            .trim() + "\n"
+    }
+
+    private fun alignSqlColumns(lines: List<String>): List<String> {
+        data class Col(val name: String, val type: String, val rest: String?)
+
+        val parsed = lines.map { line ->
+            val parts = line.trim().split(Regex("\\s+"), limit = 3)
+            Col(
+                name = parts.getOrNull(0) ?: "",
+                type = parts.getOrNull(1) ?: "",
+                rest = parts.getOrNull(2)
+            )
+        }
+
+        val maxName = parsed.maxOf { it.name.length }
+        val maxType = parsed.maxOf { it.type.length }
+
+        return parsed.map { col ->
+            buildString {
+                append("    ")
+                append(col.name.padEnd(maxName))
+                append("    ")
+                append(col.type.padEnd(maxType))
+                if (col.rest != null) append(" ${col.rest}")
+            }
+        }
+    }
+
+    private fun formatPlainSql(sql: String): String =
+        sql.trim()
+            .replace(Regex("\\n{3,}"), "\n\n") // Keine 3+ Leerzeilen
+            .trim() + "\n"
+
+
 
     private fun prepareTargetDirectory(schemaKey: String): File {
         val dir = File(outDir, schemaKey.lowercase())
@@ -540,7 +607,6 @@ class SchemaGenerator(
             return out.distinct()
         }
     }
-
 
     private data class ColumnDef(
         val name: String,
