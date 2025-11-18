@@ -447,8 +447,8 @@ class SchemaGenerator(
                     appendLine("-- Setup UUID v7 (pgcrypto)")
                     appendLine("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
                     appendLine()
-                    appendLine("CREATE OR REPLACE FUNCTION public.uuid_generate_v7()")
-                    appendLine("RETURNS UUID AS \$\$")
+                    appendLine("CREATE FUNCTION IF NOT EXISTS public.uuid_generate_v7()")
+                    appendLine("RETURNS UUID AS $$")
                     appendLine("DECLARE")
                     appendLine("    unix_ts_ms BIGINT;")
                     appendLine("    uuid_bytes BYTEA;")
@@ -460,7 +460,7 @@ class SchemaGenerator(
                     appendLine("    uuid_bytes := SET_BYTE(uuid_bytes, 8, (GET_BYTE(uuid_bytes, 8) & 63) | 128);")
                     appendLine("    RETURN encode(uuid_bytes, 'hex')::UUID;")
                     appendLine("END;")
-                    appendLine("\$\$ LANGUAGE plpgsql VOLATILE;")
+                    appendLine("$$ LANGUAGE plpgsql VOLATILE;")
                 }
 
             UUIDType.UUID_V4 ->
