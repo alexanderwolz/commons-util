@@ -47,7 +47,7 @@ class SchemaGeneratorTest {
 
         val tableFile = File(schemaDir, "V1__create_sample_table.sql")
         val text = tableFile.readText()
-        assertTrue(text.contains("DEFAULT uuid_generate_v7()"))
+        assertTrue(text.contains("DEFAULT public.uuid_generate_v7()"))
         assertTrue(text.contains("PRIMARY KEY"))
         assertTrue(text.contains("created_at") && text.contains("DEFAULT CURRENT_TIMESTAMP"))
     }
@@ -64,7 +64,7 @@ class SchemaGeneratorTest {
         assertFalse(setupFile.exists(), "UUIDv4 must not generate V0")
 
         val text = File(schemaDir, "V1__create_sample_table.sql").readText()
-        assertTrue(text.contains("DEFAULT uuid_generate_v4()"))
+        assertTrue(text.contains("DEFAULT public.uuid_generate_v4()"))
         assertFalse(text.contains("uuid_generate_v7()"))
     }
 
