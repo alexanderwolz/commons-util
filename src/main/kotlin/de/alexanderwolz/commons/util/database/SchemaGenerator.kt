@@ -298,8 +298,8 @@ class SchemaGenerator(
         when (databaseType) {
             DatabaseType.POSTGRES ->
                 when (uuidType) {
-                    UUIDType.UUID_V7 -> "DEFAULT uuid_generate_v7()"
-                    UUIDType.UUID_V4 -> "DEFAULT uuid_generate_v4()"
+                    UUIDType.UUID_V7 -> "DEFAULT public.uuid_generate_v7()"
+                    UUIDType.UUID_V4 -> "DEFAULT public.uuid_generate_v4()"
                 }
 
             DatabaseType.MARIADB -> "DEFAULT (UUID())"
@@ -447,14 +447,14 @@ class SchemaGenerator(
                     appendLine("-- Setup UUID v7 (pgcrypto)")
                     appendLine("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
                     appendLine()
-                    appendLine("CREATE OR REPLACE FUNCTION uuid_generate_v7()")
+                    appendLine("CREATE OR REPLACE FUNCTION public.uuid_generate_v7()")
                     appendLine("RETURNS UUID AS \$\$")
                     appendLine("DECLARE")
                     appendLine("    unix_ts_ms BIGINT;")
                     appendLine("    uuid_bytes BYTEA;")
                     appendLine("BEGIN")
                     appendLine("    unix_ts_ms := (EXTRACT(EPOCH FROM CLOCK_TIMESTAMP()) * 1000)::BIGINT;")
-                    appendLine("    uuid_bytes := gen_random_bytes(16);")
+                    appendLine("    uuid_bytes := public.gen_random_bytes(16);")
                     appendLine("    uuid_bytes := OVERLAY(uuid_bytes PLACING substring(int8send(unix_ts_ms) FROM 3) FROM 1 FOR 6);")
                     appendLine("    uuid_bytes := SET_BYTE(uuid_bytes, 6, (GET_BYTE(uuid_bytes, 6) & 15) | 112);")
                     appendLine("    uuid_bytes := SET_BYTE(uuid_bytes, 8, (GET_BYTE(uuid_bytes, 8) & 63) | 128);")
