@@ -6,6 +6,7 @@ import java.io.File
 import java.lang.reflect.Field
 import java.lang.reflect.Modifier
 import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 class SchemaGenerator(
     private val basePackage: String,
@@ -14,14 +15,17 @@ class SchemaGenerator(
     private val uuidType: UUIDType = UUIDType.UUID_V7
 ) {
 
-    enum class DatabaseType { POSTGRES, MARIADB }
-    enum class UUIDType { UUID_V4, UUID_V7 }
-
     private val logger = Logger(javaClass)
+
+    private val formatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
+    private fun timestamp() = LocalDateTime.now().format(formatter)
 
     // =========================================================================
     // PUBLIC API
     // =========================================================================
+
+    enum class DatabaseType { POSTGRES, MARIADB }
+    enum class UUIDType { UUID_V4, UUID_V7 }
 
     fun generate() {
         logger.info { "Generating SQL migrations from classes within '$basePackage'" }
@@ -65,47 +69,48 @@ class SchemaGenerator(
         if (databaseType == DatabaseType.POSTGRES && uuidType == UUIDType.UUID_V7) {
             val usesUuid = entities.any { it.idField() != null }
             if (usesUuid) {
-                val f = File(target, "V0__setup_uuid_extension.sql")
+                val file = File(target, "V${timestamp()}__setup_uuid_extension.sql")
                 val sql = tableGen.generateUuidExtensionSetup()
-                f.writeText(formatPlainSql(sql))
-                logger.info { "Created: ${f.parentFile.name}/${f.name}" }
+                file.writeText(formatPlainSql(sql))
+                logger.info { "Created: ${file.parentFile.name}/${file.name}" }
             }
         }
 
         // CREATE TABLES
         entities.forEachIndexed { i, e ->
             val table = getTableName(e)
-            val f = File(target, "V${i + 1}__create_${table}_table.sql")
+            val file = File(target, "V${timestamp()}__create_${table}_table.sql")
 
             val rawSql = tableGen.generateCreateTableSql(e, table)
             val formatted = formatCreateTableSql(rawSql)
 
-            f.writeText(formatted)
-            logger.info { "Created: ${f.parentFile.name}/${f.name}" }
+            file.writeText(formatted)
+            logger.info { "Created: ${file.parentFile.name}/${file.name}" }
         }
 
         // FOREIGN KEYS
         val fkList = fkGen.generateAllForeignKeys(entities)
         if (fkList.isNotEmpty()) {
-            val f = File(target, "V${entities.size + 1}__add_foreign_keys.sql")
+            val file = File(target, "V${timestamp()}__add_foreign_keys.sql")
+
             val sql =
                 "-- Foreign Keys generated ${LocalDateTime.now()}\n" +
                         fkList.joinToString("\n\n")
 
-            f.writeText(formatPlainSql(sql))
-            logger.info { "Created: ${f.parentFile.name}/${f.name}" }
+            file.writeText(formatPlainSql(sql))
+            logger.info { "Created: ${file.parentFile.name}/${file.name}" }
         }
 
         // INDEXES
         val idxList = idxGen.generateAllIndexes(entities)
         if (idxList.isNotEmpty()) {
-            val f = File(target, "V${entities.size + 2}__add_indexes.sql")
+            val file = File(target, "V${timestamp()}__add_indexes.sql")
             val sql =
                 "-- Indexes generated ${LocalDateTime.now()}\n" +
                         idxList.joinToString("\n\n")
 
-            f.writeText(formatPlainSql(sql))
-            logger.info { "Created: ${f.parentFile.name}/${f.name}" }
+            file.writeText(formatPlainSql(sql))
+            logger.info { "Created: ${file.parentFile.name}/${file.name}" }
         }
     }
 
@@ -165,7 +170,6 @@ class SchemaGenerator(
         sql.trim()
             .replace(Regex("\\n{3,}"), "\n\n") // Keine 3+ Leerzeilen
             .trim() + "\n"
-
 
 
     private fun prepareTargetDirectory(schemaKey: String): File {
