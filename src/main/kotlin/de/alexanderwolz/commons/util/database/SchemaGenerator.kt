@@ -12,11 +12,11 @@ class SchemaGenerator(
     private val basePackage: String,
     private val outDir: File,
     private val databaseType: DatabaseType = DatabaseType.POSTGRES,
-    private val uuidType: UUIDType = UUIDType.UUID_V7
+    private val uuidType: UUIDType = UUIDType.UUID_V7,
+    private val partitionStrategy: PartitionStrategy = PackageNamePartitionStrategy()
 ) {
 
     private val logger = Logger(javaClass)
-
     private val formatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
     private fun timestamp() = LocalDateTime.now().format(formatter)
 
@@ -31,28 +31,25 @@ class SchemaGenerator(
         logger.info { "Generating SQL migrations from classes within '$basePackage'" }
         logger.info { "Database Type: $databaseType, UUID Type: $uuidType" }
 
-        val entities = EntityScanner().findEntities()
-
-        separateBySchema(entities).forEach { (schema, list) ->
-            generateFiles(list, schema)
+        groupByPartition(EntityScanner().findEntities()).forEach { (schema, entities) ->
+            generateFiles(entities, schema)
         }
 
         logger.info { "done" }
     }
 
-    @Suppress("unused")
-    private fun findEntities(): List<Class<*>> =
-        EntityScanner().findEntities()
 
-    private fun separateBySchema(entities: List<Class<*>>): Map<String, List<Class<*>>> {
-        val map = HashMap<String, MutableList<Class<*>>>()
-        entities.forEach { entity ->
-            val schema = entity.getAnnotation(Table::class.java)?.schema ?: ""
-            val key =
-                schema.takeIf { it.isNotBlank() }?.lowercase()
-                    ?: entity.packageName.split(".").last()
+    // =========================================================================
+    // PRIVATE
+    // =========================================================================
 
-            map.computeIfAbsent(key) { mutableListOf() }.add(entity)
+    internal fun findEntities(): List<Class<*>> = EntityScanner().findEntities()
+
+    internal fun groupByPartition(entities: List<Class<*>>): Map<String, List<Class<*>>> {
+        val map = mutableMapOf<String, MutableList<Class<*>>>()
+        for (e in entities) {
+            val folder = partitionStrategy.folderFor(e)
+            map.computeIfAbsent(folder) { mutableListOf() }.add(e)
         }
         return map
     }
@@ -77,7 +74,7 @@ class SchemaGenerator(
         }
 
         // CREATE TABLES
-        entities.forEachIndexed { i, e ->
+        entities.forEach { e ->
             val table = getTableName(e)
             val file = File(target, "V${timestamp()}__create_${table}_table.sql")
 
