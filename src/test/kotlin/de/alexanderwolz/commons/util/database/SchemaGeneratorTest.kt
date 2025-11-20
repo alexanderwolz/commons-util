@@ -2,6 +2,8 @@ package de.alexanderwolz.commons.util.database
 
 import de.alexanderwolz.commons.util.database.entity.bar.AnotherEntity
 import de.alexanderwolz.commons.util.database.entity.fu.SampleEntity
+import de.alexanderwolz.commons.util.database.provider.PackageProvider
+import jakarta.persistence.Table
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
@@ -19,10 +21,10 @@ class SchemaGeneratorTest {
     fun testPostgresUuidV7Generation() {
         val dir = runGenerator(SchemaGenerator.DatabaseType.POSTGRES, SchemaGenerator.UUIDType.UUID_V7)
 
-        val folder = dir.folderFor(SampleEntity::class.java)
+        val setup = dir.findBySuffix("_setup_uuid_extension.sql")
 
-        val setup = folder.findBySuffix("__setup_uuid_extension.sql")
-        val create = folder.findBySuffix("__create_sample_table.sql")
+        val folder = dir.folderFor(SampleEntity::class.java)
+        val create = folder.findBySuffix("_create_sample_table.sql")
 
         assertTrue(setup.readText().contains("uuid_generate_v7"))
         assertTrue(create.readText().startsWith("-- HASH:"))
@@ -37,7 +39,7 @@ class SchemaGeneratorTest {
         // Kein Setup bei V4
         assertEquals(folder.listFiles()?.none { it.name.contains("__setup_uuid_extension") }, true)
 
-        val create = folder.findBySuffix("__create_sample_table.sql")
+        val create = folder.findBySuffix("_create_sample_table.sql")
         assertTrue(create.readText().contains("uuid_generate_v4"))
         assertTrue(create.readText().startsWith("-- HASH:"))
     }
@@ -47,7 +49,7 @@ class SchemaGeneratorTest {
         val dir = runGenerator(SchemaGenerator.DatabaseType.MARIADB, SchemaGenerator.UUIDType.UUID_V4)
 
         val folder = dir.folderFor(SampleEntity::class.java)
-        val create = folder.findBySuffix("__create_sample_table.sql")
+        val create = folder.findBySuffix("_create_sample_table.sql")
 
         val text = create.readText()
         assertTrue(text.contains("CHAR(36)"))
@@ -59,7 +61,7 @@ class SchemaGeneratorTest {
         val dir = runGenerator(SchemaGenerator.DatabaseType.MARIADB, SchemaGenerator.UUIDType.UUID_V7)
 
         val folder = dir.folderFor(SampleEntity::class.java)
-        val create = folder.findBySuffix("__create_sample_table.sql")
+        val create = folder.findBySuffix("_create_sample_table.sql")
 
         assertTrue(create.readText().contains("DEFAULT (UUID())")) // fallback
     }
@@ -78,7 +80,7 @@ class SchemaGeneratorTest {
         val dir = runGenerator(SchemaGenerator.DatabaseType.POSTGRES, SchemaGenerator.UUIDType.UUID_V4)
         val folder = dir.folderFor(SampleEntity::class.java)
 
-        val fk = folder.findBySuffix("__add_foreign_keys.sql").readText()
+        val fk = folder.findBySuffix("_add_foreign_keys.sql").readText()
 
         assertTrue(fk.contains("ON DELETE CASCADE") || fk.contains("ON DELETE SET NULL"))
     }
@@ -88,7 +90,7 @@ class SchemaGeneratorTest {
         val dir = runGenerator(SchemaGenerator.DatabaseType.POSTGRES, SchemaGenerator.UUIDType.UUID_V4)
         val folder = dir.folderFor(SampleEntity::class.java)
 
-        val idx = folder.findBySuffix("__add_indexes.sql").readText()
+        val idx = folder.findBySuffix("_add_indexes.sql").readText()
 
         assertTrue(idx.contains("CREATE INDEX"))
     }
@@ -98,7 +100,7 @@ class SchemaGeneratorTest {
         val dir = runGenerator(SchemaGenerator.DatabaseType.POSTGRES, SchemaGenerator.UUIDType.UUID_V4)
         val folder = dir.folderFor(SampleEntity::class.java)
 
-        val create = folder.findBySuffix("__create_sample_table.sql").readText()
+        val create = folder.findBySuffix("_create_sample_table.sql").readText()
 
         assertTrue(create.contains("address_street"))
         assertTrue(create.contains("address_city"))
@@ -109,7 +111,7 @@ class SchemaGeneratorTest {
         val dir = runGenerator(SchemaGenerator.DatabaseType.POSTGRES, SchemaGenerator.UUIDType.UUID_V4)
         val folder = dir.folderFor(SampleEntity::class.java)
 
-        val file = folder.findBySuffix("__create_sample_table.sql")
+        val file = folder.findBySuffix("_create_sample_table.sql")
         val firstLine = file.readLines().first()
 
         assertTrue(firstLine.startsWith("-- HASH:"))
@@ -118,10 +120,16 @@ class SchemaGeneratorTest {
 
     @Test
     fun testGroupingByPackage() {
-        val strategy = PackageNamePartitionStrategy()
+        val strategy = object : PackageProvider {
+            override fun getFolderFor(entityClass: Class<*>, root: File) = entityClass.packageName.split(".").last()
+            override fun getCommonFolder(root: File): String = "common"
+        }
 
-        val grouped = SchemaGenerator(entityPackage, tmpDir, partitionStrategy = strategy)
-            .groupByPartition(listOf(SampleEntity::class.java, AnotherEntity::class.java))
+        val grouped = SchemaGenerator(
+            entityPackage,
+            tmpDir,
+            provider = strategy
+        ).groupByPartition(listOf(SampleEntity::class.java, AnotherEntity::class.java))
 
         assertTrue(grouped.containsKey("fu"))
         assertTrue(grouped.containsKey("bar"))
@@ -129,8 +137,7 @@ class SchemaGeneratorTest {
 
 
     private fun runGenerator(
-        db: SchemaGenerator.DatabaseType,
-        uuid: SchemaGenerator.UUIDType
+        db: SchemaGenerator.DatabaseType, uuid: SchemaGenerator.UUIDType
     ): File {
         val outDir = File(tmpDir, "migration_${db}_${uuid}")
         SchemaGenerator(entityPackage, outDir, db, uuid).generate()
@@ -138,16 +145,25 @@ class SchemaGeneratorTest {
     }
 
     private fun File.folderFor(entity: Class<*>): File {
-        val folder = File(this, entity.packageName.split(".").last())
+        val table = entity.annotations.find { it.annotationClass == Table::class } as? Table
+        this.listFiles { it.name.contains(table?.name ?: entity.simpleName.lowercase()) }?.firstOrNull()?.let {
+            return this
+        }
+
+        val lastPart = entity.packageName.split(".").last()
+        val folder = File(this, lastPart)
+
         require(folder.exists()) { "Folder for entity not found: ${folder.absolutePath}" }
         return folder
     }
 
-    private fun File.findBySuffix(suffix: String): File {
-        val candidates = listFiles()?.filter { it.name.contains(suffix) }.orEmpty()
-        require(candidates.isNotEmpty()) {
-            "No file ending with '$suffix' in: ${listFiles()?.toList()}"
+    fun File.findBySuffix(suffix: String): File {
+        if (this.name.contains(suffix)) return this
+        this.listFiles { it.name.contains(suffix) }?.firstOrNull()?.let {
+            return it
         }
-        return candidates.first()
+        return this.listFiles()?.firstOrNull { it.name.contains(suffix) }
+            ?: error("No file containing '$suffix' in: ${this.listFiles()?.toList()} ($this)")
     }
+
 }
