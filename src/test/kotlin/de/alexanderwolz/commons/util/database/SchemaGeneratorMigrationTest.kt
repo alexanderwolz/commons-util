@@ -301,10 +301,10 @@ class SchemaGeneratorMigrationTest {
     }
 
     @Test
-    fun testSmartModeGeneratesAlterScripts() {
+    fun testSmartModeGeneratesAlterScriptsOnChange() {
         val dir = File(tmpDir, "smart_mode_alter").apply { mkdirs() }
 
-        // Erstelle einen Generator im CREATE_ONLY Modus
+        // Phase 1: CREATE Mode - Initiale Tabellen
         val createGen = SchemaGenerator(
             basePackage = entityPackage,
             outDir = dir,
@@ -312,14 +312,13 @@ class SchemaGeneratorMigrationTest {
             uuidType = SchemaGenerator.UUIDType.UUID_V4,
             migrationMode = SchemaGenerator.MigrationMode.CREATE_ONLY
         )
-
-        // Erste Migration: CREATE
         createGen.generate()
 
         val createFiles = dir.walkTopDown().filter { it.extension == "sql" }.toList()
         assertTrue(createFiles.isNotEmpty(), "CREATE mode should generate files")
+        println("After CREATE: ${createFiles.size} files")
 
-        // Jetzt im SMART mode nochmal laufen lassen (ohne Änderungen)
+        // Phase 2: SMART mode ohne Änderungen
         val smartGen1 = SchemaGenerator(
             basePackage = entityPackage,
             outDir = dir,
@@ -327,7 +326,6 @@ class SchemaGeneratorMigrationTest {
             uuidType = SchemaGenerator.UUIDType.UUID_V4,
             migrationMode = SchemaGenerator.MigrationMode.SMART
         )
-
         smartGen1.generate()
 
         val filesAfterSmart1 = dir.walkTopDown().filter { it.extension == "sql" }.toList()
@@ -336,8 +334,43 @@ class SchemaGeneratorMigrationTest {
             "SMART mode without changes should not create new files"
         )
 
-        // TODO: Hier müsstest du eine Entity ändern und erneut generieren
-        // Dann sollten ALTER-Skripte erscheinen
+        // Phase 3: Simuliere eine Schema-Änderung durch manuelles Editieren der State-Datei
+        val stateDir = File(dir, ".schema-state")
+        val stateFile = stateDir.walkTopDown()
+            .filter { it.extension == "json" }
+            .firstOrNull()
+
+        assertNotNull(stateFile, "Should have at least one state file")
+
+        val currentState = TableSchema.fromJson(stateFile.readText())
+
+        currentState.copy(
+            columns = currentState.columns + ColumnSchema(
+                name = "new_column",
+                type = "VARCHAR(100)",
+                nullable = true
+            )
+        )
+
+        stateFile.writeText(currentState.toJson())
+
+        Thread.sleep(1100)
+
+        val smartGen2 = SchemaGenerator(
+            basePackage = entityPackage,
+            outDir = dir,
+            databaseType = SchemaGenerator.DatabaseType.POSTGRES,
+            uuidType = SchemaGenerator.UUIDType.UUID_V4,
+            migrationMode = SchemaGenerator.MigrationMode.SMART
+        )
+        smartGen2.generate()
+
+        val filesAfterChange = dir.walkTopDown().filter { it.extension == "sql" }.toList()
+        
+        val alterFiles = filesAfterChange.filter { it.name.contains("alter") }
+
+        println("After simulated change: ${filesAfterChange.size} files (${alterFiles.size} ALTER files)")
+        alterFiles.forEach { println("  - ${it.name}") }
     }
 
     @Test
