@@ -37,7 +37,7 @@ class SchemaGenerator(
         validateUniqueTableNames(rawEntities)
         val entities = rawEntities.sortedBy { stableSortKey(getTableName(it)) }
 
-        generateCommonFiles(entities)
+        generateSetupFiles(entities)
 
         groupByPartition(entities).forEach { (schema, entitiesInPartition) ->
             val sorted = entitiesInPartition.sortedBy { stableSortKey(getTableName(it)) }
@@ -79,13 +79,13 @@ class SchemaGenerator(
         return result
     }
 
-    private fun generateCommonFiles(entities: List<Class<*>>) {
-        val commonFolder = provider.getCommonFolder(outDir) ?: ""
+    private fun generateSetupFiles(entities: List<Class<*>>) {
+        val setupFolder = provider.getSetupFolder(outDir) ?: ""
 
         if (databaseType == DatabaseType.POSTGRES && uuidType == UUIDType.UUID_V7) {
             val usesUuid = entities.any { it.idField() != null }
             if (usesUuid) {
-                val target = prepareTargetDirectory(commonFolder)
+                val target = prepareTargetDirectory(setupFolder)
                 val sql = formatPlainSql(TableSqlGenerator().generateUuidExtensionSetup())
                 writeMigrationFile(target, "0001", "setup_uuid_extension", sql)
             }
@@ -610,7 +610,7 @@ class SchemaGenerator(
 
         val newHash = hashOf(content)
 
-        val pattern = Regex("""V\d{8}_\d{6}_${sortNumber}__${baseName}\.sql""")
+        val pattern = Regex("""V\d{8}_\d{6}__${sortNumber}_${baseName}\.sql""")
 
         val existingFiles = targetDir
             .listFiles()
@@ -624,14 +624,15 @@ class SchemaGenerator(
         }
 
         if (exactMatch != null) {
-            logger.info { "Skipped (unchanged): ${exactMatch.name}" }
+            logger.info { "Skipped (unchanged): ${exactMatch.name} -> ($exactMatch)" }
             return
         }
 
-        val filename = "V${timestamp()}_${sortNumber}__${baseName}.sql"
+        val filename = "V${timestamp()}__${sortNumber}_${baseName}.sql"
+
         val newFile = File(targetDir, filename)
         newFile.writeText(addHeaderWithHash(content))
-        logger.info { "Created: ${newFile.name}" }
+        logger.info { "Created: ${newFile.name} -> ($newFile)" }
     }
 
 

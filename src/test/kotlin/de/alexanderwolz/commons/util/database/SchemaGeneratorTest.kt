@@ -122,7 +122,7 @@ class SchemaGeneratorTest {
     fun testGroupingByPackage() {
         val strategy = object : PackageProvider {
             override fun getFolderFor(entityClass: Class<*>, root: File) = entityClass.packageName.split(".").last()
-            override fun getCommonFolder(root: File): String = "common"
+            override fun getSetupFolder(root: File): String = "setup"
         }
 
         val grouped = SchemaGenerator(

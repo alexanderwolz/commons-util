@@ -4,5 +4,5 @@ import java.io.File
 
 class DefaultPackageProvider : PackageProvider {
     override fun getFolderFor(entityClass: Class<*>, root: File) = ""
-    override fun getCommonFolder(root: File) = ""
+    override fun getSetupFolder(root: File) = ""
 }
