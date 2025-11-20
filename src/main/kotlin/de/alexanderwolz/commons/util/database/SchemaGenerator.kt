@@ -21,30 +21,41 @@ class SchemaGenerator(
 ) {
 
     private val logger = Logger(javaClass)
-    private val formatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
-    private fun timestamp() = LocalDateTime.now().format(formatter)
     private val entityScanner = EntityScanner(basePackage)
 
     enum class DatabaseType { POSTGRES, MARIADB }
     enum class UUIDType { UUID_V4, UUID_V7 }
 
+    private var executionTimestamp = ""
+
+
     fun generate() {
-        logger.info { "Generating SQL migrations from classes within '$basePackage'" }
-        logger.info { "Database Type: $databaseType, UUID Type: $uuidType" }
+        try {
+            executionTimestamp = buildTimestamp() //ensure the same timestamp for all files
 
-        val rawEntities = entityScanner.findEntities()
+            logger.info { "Generating SQL migrations from classes within '$basePackage'" }
+            logger.info { "Database Type: $databaseType, UUID Type: $uuidType" }
 
-        validateUniqueTableNames(rawEntities)
-        val entities = rawEntities.sortedBy { stableSortKey(getTableName(it)) }
+            val rawEntities = entityScanner.findEntities()
 
-        generateSetupFiles(entities)
+            validateUniqueTableNames(rawEntities)
+            val entities = rawEntities.sortedBy { stableSortKey(getTableName(it)) }
 
-        groupByPartition(entities).forEach { (schema, entitiesInPartition) ->
-            val sorted = entitiesInPartition.sortedBy { stableSortKey(getTableName(it)) }
-            generateFiles(sorted, schema)
+            generateSetupFiles(entities)
+
+            groupByPartition(entities).forEach { (schema, entitiesInPartition) ->
+                val sorted = entitiesInPartition.sortedBy { stableSortKey(getTableName(it)) }
+                generateFiles(sorted, schema)
+            }
+
+            logger.info { "done" }
+        } finally {
+            executionTimestamp = ""
         }
+    }
 
-        logger.info { "done" }
+    private fun buildTimestamp(): String {
+        return DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(LocalDateTime.now())
     }
 
     private fun validateUniqueTableNames(entities: List<Class<*>>) {
@@ -87,7 +98,12 @@ class SchemaGenerator(
             if (usesUuid) {
                 val target = prepareTargetDirectory(setupFolder)
                 val sql = formatPlainSql(TableSqlGenerator().generateUuidExtensionSetup())
-                writeMigrationFile(target, "0001", "setup_uuid_extension", sql)
+                writeMigrationFile(
+                    targetDir = target,
+                    sortNumber = "0001",
+                    baseName = "setup_uuid_extension",
+                    content = sql
+                )
             }
         }
     }
@@ -104,19 +120,34 @@ class SchemaGenerator(
             val table = getTableName(entity)
             val sql = formatCreateTableSql(tableGen.generateCreateTableSql(entity, table))
             val sortNumber = (1000 + index).toString().padStart(4, '0')
-            writeMigrationFile(target, sortNumber, "create_${table}_table", sql)
+            writeMigrationFile(
+                targetDir = target,
+                sortNumber = sortNumber,
+                baseName = "create_${table}_table",
+                content = sql
+            )
         }
 
         val fkList = fkGen.generateAllForeignKeys(entities)
         if (fkList.isNotEmpty()) {
             val sql = "-- Foreign Keys\n" + fkList.joinToString("\n\n")
-            writeMigrationFile(target, "5000", "add_foreign_keys", formatPlainSql(sql))
+            writeMigrationFile(
+                targetDir = target,
+                sortNumber = "5000",
+                baseName = "add_foreign_keys",
+                content = formatPlainSql(sql)
+            )
         }
 
         val idxList = idxGen.generateAllIndexes(entities)
         if (idxList.isNotEmpty()) {
             val sql = "-- Indexes\n" + idxList.joinToString("\n\n")
-            writeMigrationFile(target, "9000", "add_indexes", formatPlainSql(sql))
+            writeMigrationFile(
+                targetDir = target,
+                sortNumber = "9000",
+                baseName = "add_indexes",
+                content = formatPlainSql(sql)
+            )
         }
     }
 
@@ -610,7 +641,7 @@ class SchemaGenerator(
 
         val newHash = hashOf(content)
 
-        val pattern = Regex("""V\d{8}_\d{6}__${sortNumber}_${baseName}\.sql""")
+        val pattern = Regex("""V\d{14}${sortNumber}__${baseName}\.sql""")
 
         val existingFiles = targetDir
             .listFiles()
@@ -628,16 +659,23 @@ class SchemaGenerator(
             return
         }
 
-        val filename = "V${timestamp()}__${sortNumber}_${baseName}.sql"
+
+        val version = executionTimestamp + sortNumber // e.g. 202511201733580001
+        val filename = "V${version}__${baseName}.sql"
 
         val newFile = File(targetDir, filename)
         newFile.writeText(addHeaderWithHash(content))
         logger.info { "Created: ${newFile.name} -> ($newFile)" }
     }
 
-
-    internal fun testWriteFileForTest(dir: File, sortNumber: String, baseName: String, content: String) {
-        writeMigrationFile(dir, sortNumber, baseName, content)
+    internal fun testWriteFileForTest(
+        dir: File,
+        baseName: String,
+        sortNumber: String,
+        content: String
+    ) {
+        executionTimestamp =  buildTimestamp() //needed for tests
+        writeMigrationFile(targetDir = dir, sortNumber = sortNumber, baseName = baseName, content = content)
     }
 
     internal fun testFindEntities(): List<Class<*>> = entityScanner.findEntities()
