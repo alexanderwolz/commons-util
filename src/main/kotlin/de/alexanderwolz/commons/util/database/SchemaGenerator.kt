@@ -5,52 +5,60 @@ import jakarta.persistence.*
 import java.io.File
 import java.lang.reflect.Field
 import java.lang.reflect.Modifier
+import java.security.MessageDigest
 import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 class SchemaGenerator(
     private val basePackage: String,
     private val outDir: File,
     private val databaseType: DatabaseType = DatabaseType.POSTGRES,
-    private val uuidType: UUIDType = UUIDType.UUID_V7
+    private val uuidType: UUIDType = UUIDType.UUID_V7,
+    private val partitionStrategy: PartitionStrategy = PackageNamePartitionStrategy(),
+    private val clearTargetFolders: Boolean = false
 ) {
 
-    enum class DatabaseType { POSTGRES, MARIADB }
-    enum class UUIDType { UUID_V4, UUID_V7 }
-
     private val logger = Logger(javaClass)
+    private val formatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
+    private fun timestamp() = LocalDateTime.now().format(formatter)
 
     // =========================================================================
     // PUBLIC API
     // =========================================================================
 
+    enum class DatabaseType { POSTGRES, MARIADB }
+    enum class UUIDType { UUID_V4, UUID_V7 }
+
     fun generate() {
         logger.info { "Generating SQL migrations from classes within '$basePackage'" }
         logger.info { "Database Type: $databaseType, UUID Type: $uuidType" }
 
-        val entities = EntityScanner().findEntities()
-
-        separateBySchema(entities).forEach { (schema, list) ->
-            generateFiles(list, schema)
+        groupByPartition(EntityScanner().findEntities()).forEach { (schema, entities) ->
+            generateFiles(entities, schema)
         }
 
         logger.info { "done" }
     }
 
-    @Suppress("unused")
-    private fun findEntities(): List<Class<*>> =
-        EntityScanner().findEntities()
 
-    private fun separateBySchema(entities: List<Class<*>>): Map<String, List<Class<*>>> {
-        val map = HashMap<String, MutableList<Class<*>>>()
-        entities.forEach { entity ->
-            val schema = entity.getAnnotation(Table::class.java)?.schema ?: ""
-            val key =
-                schema.takeIf { it.isNotBlank() }?.lowercase()
-                    ?: entity.packageName.split(".").last()
+    // =========================================================================
+    // PRIVATE
+    // =========================================================================
 
-            map.computeIfAbsent(key) { mutableListOf() }.add(entity)
+
+    internal fun groupByPartition(entities: List<Class<*>>): Map<String, List<Class<*>>> {
+        val map = mutableMapOf<String, MutableList<Class<*>>>()
+        for (e in entities) {
+            val folder = partitionStrategy.folderFor(e)
+            map.computeIfAbsent(folder) { mutableListOf() }.add(e)
         }
         return map
+    }
+
+    internal fun testFindEntities(): List<Class<*>> = EntityScanner().findEntities()
+
+    internal fun testWriteFileForTest(dir: File, baseName: String, content: String) {
+        writeMigrationFile(dir, baseName, content)
     }
 
     private fun generateFiles(entities: List<Class<*>>, schema: String) {
@@ -65,47 +73,30 @@ class SchemaGenerator(
         if (databaseType == DatabaseType.POSTGRES && uuidType == UUIDType.UUID_V7) {
             val usesUuid = entities.any { it.idField() != null }
             if (usesUuid) {
-                val f = File(target, "V0__setup_uuid_extension.sql")
-                val sql = tableGen.generateUuidExtensionSetup()
-                f.writeText(formatPlainSql(sql))
-                logger.info { "Created: ${f.parentFile.name}/${f.name}" }
+                val sql = formatPlainSql(tableGen.generateUuidExtensionSetup())
+                writeMigrationFile(target, "setup_uuid_extension", sql)
             }
         }
 
         // CREATE TABLES
-        entities.forEachIndexed { i, e ->
-            val table = getTableName(e)
-            val f = File(target, "V${i + 1}__create_${table}_table.sql")
-
-            val rawSql = tableGen.generateCreateTableSql(e, table)
-            val formatted = formatCreateTableSql(rawSql)
-
-            f.writeText(formatted)
-            logger.info { "Created: ${f.parentFile.name}/${f.name}" }
+        entities.forEach { entity ->
+            val table = getTableName(entity)
+            val sql = formatCreateTableSql(tableGen.generateCreateTableSql(entity, table))
+            writeMigrationFile(target, "create_${table}_table", sql)
         }
 
         // FOREIGN KEYS
         val fkList = fkGen.generateAllForeignKeys(entities)
         if (fkList.isNotEmpty()) {
-            val f = File(target, "V${entities.size + 1}__add_foreign_keys.sql")
-            val sql =
-                "-- Foreign Keys generated ${LocalDateTime.now()}\n" +
-                        fkList.joinToString("\n\n")
-
-            f.writeText(formatPlainSql(sql))
-            logger.info { "Created: ${f.parentFile.name}/${f.name}" }
+            val sql = "-- Foreign Keys\n" + fkList.joinToString("\n\n")
+            writeMigrationFile(target, "add_foreign_keys", formatPlainSql(sql))
         }
 
         // INDEXES
         val idxList = idxGen.generateAllIndexes(entities)
         if (idxList.isNotEmpty()) {
-            val f = File(target, "V${entities.size + 2}__add_indexes.sql")
-            val sql =
-                "-- Indexes generated ${LocalDateTime.now()}\n" +
-                        idxList.joinToString("\n\n")
-
-            f.writeText(formatPlainSql(sql))
-            logger.info { "Created: ${f.parentFile.name}/${f.name}" }
+            val sql = "-- Indexes\n" + idxList.joinToString("\n\n")
+            writeMigrationFile(target, "add_indexes", formatPlainSql(sql))
         }
     }
 
@@ -121,18 +112,14 @@ class SchemaGenerator(
         val body = lines.subList(startIdx + 1, endIdx)
         val footer = lines.subList(endIdx, lines.size)
 
-        val cleanBody = body
-            .map { it.trim().removeSuffix(",") }
-            .filter { it.isNotBlank() }
+        val cleanBody = body.map { it.trim().removeSuffix(",") }.filter { it.isNotBlank() }
 
         val aligned = alignSqlColumns(cleanBody).toMutableList()
         aligned.forEachIndexed { i, _ ->
             aligned[i] = if (i == aligned.lastIndex) aligned[i] else aligned[i] + ","
         }
 
-        return (header + aligned + footer)
-            .joinToString("\n")
-            .trim() + "\n"
+        return (header + aligned + footer).joinToString("\n").trim() + "\n"
     }
 
     private fun alignSqlColumns(lines: List<String>): List<String> {
@@ -141,9 +128,7 @@ class SchemaGenerator(
         val parsed = lines.map { line ->
             val parts = line.trim().split(Regex("\\s+"), limit = 3)
             Col(
-                name = parts.getOrNull(0) ?: "",
-                type = parts.getOrNull(1) ?: "",
-                rest = parts.getOrNull(2)
+                name = parts.getOrNull(0) ?: "", type = parts.getOrNull(1) ?: "", rest = parts.getOrNull(2)
             )
         }
 
@@ -162,17 +147,18 @@ class SchemaGenerator(
     }
 
     private fun formatPlainSql(sql: String): String =
-        sql.trim()
-            .replace(Regex("\\n{3,}"), "\n\n") // Keine 3+ Leerzeilen
+        sql.trim().replace(Regex("\\n{3,}"), "\n\n") // Keine 3+ Leerzeilen
             .trim() + "\n"
 
 
-
     private fun prepareTargetDirectory(schemaKey: String): File {
-        val dir = File(outDir, schemaKey.lowercase())
-        dir.mkdirs()
-        dir.listFiles()?.forEach { it.delete() }
-        return dir
+        return File(outDir, schemaKey.lowercase()).apply {
+            mkdirs()
+            if (clearTargetFolders) {
+                logger.info { "Clearing target folder ${this.absolutePath}" }
+                listFiles()?.forEach { it.deleteRecursively() }
+            }
+        }
     }
 
     private fun getTableName(clazz: Class<*>) =
@@ -180,28 +166,21 @@ class SchemaGenerator(
             ?: toSnakeCase(clazz.simpleName)
 
     private fun toSnakeCase(s: String): String =
-        s.replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
-            .replace(Regex("([A-Z]+)([A-Z][a-z])"), "$1_$2")
-            .lowercase()
+        s.replace(Regex("([a-z0-9])([A-Z])"), "$1_$2").replace(Regex("([A-Z]+)([A-Z][a-z])"), "$1_$2").lowercase()
 
-    private fun Class<*>.idField(): Field? =
-        allPersistentFields(this).firstOrNull {
-            it.findAnnotationOnFieldOrGetter<Id>(this) != null
-        }
+    private fun Class<*>.idField(): Field? = allPersistentFields(this).firstOrNull {
+        it.findAnnotationOnFieldOrGetter<Id>(this) != null
+    }
 
     private fun allPersistentFields(type: Class<*>): List<Field> {
         val map = LinkedHashMap<String, Field>()
         var c: Class<*>? = type
         while (c != null && c != Any::class.java) {
-            c.declaredFields
-                .filter {
-                    !Modifier.isStatic(it.modifiers) &&
-                            !it.isSynthetic &&
-                            it.getAnnotation(Transient::class.java) == null
-                }
-                .forEach { f ->
-                    map.putIfAbsent(f.name, f)
-                }
+            c.declaredFields.filter {
+                !Modifier.isStatic(it.modifiers) && !it.isSynthetic && it.getAnnotation(Transient::class.java) == null
+            }.forEach { f ->
+                map.putIfAbsent(f.name, f)
+            }
             c = c.superclass
         }
         return map.values.toList()
@@ -210,9 +189,8 @@ class SchemaGenerator(
     private inline fun <reified A : Annotation> Field.findAnnotationOnFieldOrGetter(owner: Class<*>): A? {
         this.getAnnotation(A::class.java)?.let { return it }
 
-        val prefix =
-            if (this.type == java.lang.Boolean.TYPE || this.type == java.lang.Boolean::class.java) "is"
-            else "get"
+        val prefix = if (this.type == java.lang.Boolean.TYPE || this.type == java.lang.Boolean::class.java) "is"
+        else "get"
 
         val getter = prefix + this.name.replaceFirstChar { it.uppercase() }
         return try {
@@ -222,11 +200,10 @@ class SchemaGenerator(
         }
     }
 
-    private fun sqlType(field: Field, col: Column?): String =
-        when (databaseType) {
-            DatabaseType.POSTGRES -> sqlTypePg(field, col)
-            DatabaseType.MARIADB -> sqlTypeMaria(field, col)
-        }
+    private fun sqlType(field: Field, col: Column?): String = when (databaseType) {
+        DatabaseType.POSTGRES -> sqlTypePg(field, col)
+        DatabaseType.MARIADB -> sqlTypeMaria(field, col)
+    }
 
     private fun sqlTypePg(field: Field, col: Column?): String {
         col?.columnDefinition?.takeIf { it.isNotBlank() }?.let { return it }
@@ -294,16 +271,14 @@ class SchemaGenerator(
         }
     }
 
-    private fun uuidDefaultSql(): String =
-        when (databaseType) {
-            DatabaseType.POSTGRES ->
-                when (uuidType) {
-                    UUIDType.UUID_V7 -> "DEFAULT public.uuid_generate_v7()"
-                    UUIDType.UUID_V4 -> "DEFAULT public.uuid_generate_v4()"
-                }
-
-            DatabaseType.MARIADB -> "DEFAULT (UUID())"
+    private fun uuidDefaultSql(): String = when (databaseType) {
+        DatabaseType.POSTGRES -> when (uuidType) {
+            UUIDType.UUID_V7 -> "DEFAULT public.uuid_generate_v7()"
+            UUIDType.UUID_V4 -> "DEFAULT public.uuid_generate_v4()"
         }
+
+        DatabaseType.MARIADB -> "DEFAULT (UUID())"
+    }
 
     private fun timestampDefault(col: String): String? =
         if (col == "created_at" || col == "updated_at") "DEFAULT CURRENT_TIMESTAMP" else null
@@ -338,13 +313,11 @@ class SchemaGenerator(
 
                     val constraints = mutableListOf("PRIMARY KEY")
 
-                    if (gen?.strategy == GenerationType.UUID)
-                        constraints.add(uuidDefaultSql())
+                    if (gen?.strategy == GenerationType.UUID) constraints.add(uuidDefaultSql())
 
-                    if (gen?.strategy == GenerationType.IDENTITY &&
-                        databaseType == DatabaseType.MARIADB
+                    if (gen?.strategy == GenerationType.IDENTITY && databaseType == DatabaseType.MARIADB) constraints.add(
+                        "AUTO_INCREMENT"
                     )
-                        constraints.add("AUTO_INCREMENT")
 
                     cols.add(ColumnDef(colName, type, constraints))
                     return@forEach
@@ -365,9 +338,9 @@ class SchemaGenerator(
                 }
 
                 // OneToMany / ManyToMany ignored
-                if (
-                    f.findAnnotationOnFieldOrGetter<OneToMany>(entity) != null ||
-                    f.findAnnotationOnFieldOrGetter<ManyToMany>(entity) != null
+                if (f.findAnnotationOnFieldOrGetter<OneToMany>(entity) != null || f.findAnnotationOnFieldOrGetter<ManyToMany>(
+                        entity
+                    ) != null
                 ) return@forEach
 
                 if (f.findAnnotationOnFieldOrGetter<Embedded>(entity) != null) {
@@ -442,74 +415,66 @@ class SchemaGenerator(
 
         fun generateUuidExtensionSetup(): String = when (uuidType) {
 
-            UUIDType.UUID_V7 ->
-                buildString {
-                    appendLine("-- Setup UUID v7 (pgcrypto + idempotent function creation)")
-                    appendLine("CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA public;")
-                    appendLine()
-                    appendLine("DO $$")
-                    appendLine("BEGIN")
-                    appendLine("    IF NOT EXISTS (")
-                    appendLine("        SELECT 1 FROM pg_proc WHERE proname = 'uuid_generate_v7'")
-                    appendLine("    ) THEN")
-                    appendLine("        CREATE FUNCTION public.uuid_generate_v7()")
-                    appendLine($$"        RETURNS UUID AS $fn$")
-                    appendLine("        DECLARE")
-                    appendLine("            unix_ts_ms BIGINT;")
-                    appendLine("            uuid_bytes BYTEA;")
-                    appendLine("        BEGIN")
-                    appendLine("            unix_ts_ms := (EXTRACT(EPOCH FROM CLOCK_TIMESTAMP()) * 1000)::BIGINT;")
-                    appendLine("            uuid_bytes := public.gen_random_bytes(16);")
-                    appendLine("            uuid_bytes := OVERLAY(uuid_bytes PLACING substring(int8send(unix_ts_ms) FROM 3) FROM 1 FOR 6);")
-                    appendLine("            uuid_bytes := SET_BYTE(uuid_bytes, 6, (GET_BYTE(uuid_bytes, 6) & 15) | 112);")
-                    appendLine("            uuid_bytes := SET_BYTE(uuid_bytes, 8, (GET_BYTE(uuid_bytes, 8) & 63) | 128);")
-                    appendLine("            RETURN encode(uuid_bytes, 'hex')::UUID;")
-                    appendLine("        END;")
-                    appendLine($$"        $fn$ LANGUAGE plpgsql VOLATILE;")
-                    appendLine("    END IF;")
-                    appendLine("END")
-                    appendLine("$$;")
-                }
+            UUIDType.UUID_V7 -> buildString {
+                appendLine("-- Setup UUID v7 (pgcrypto + idempotent function creation)")
+                appendLine("CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA public;")
+                appendLine()
+                appendLine("DO $$")
+                appendLine("BEGIN")
+                appendLine("    IF NOT EXISTS (")
+                appendLine("        SELECT 1 FROM pg_proc WHERE proname = 'uuid_generate_v7'")
+                appendLine("    ) THEN")
+                appendLine("        CREATE FUNCTION public.uuid_generate_v7()")
+                appendLine($$"        RETURNS UUID AS $fn$")
+                appendLine("        DECLARE")
+                appendLine("            unix_ts_ms BIGINT;")
+                appendLine("            uuid_bytes BYTEA;")
+                appendLine("        BEGIN")
+                appendLine("            unix_ts_ms := (EXTRACT(EPOCH FROM CLOCK_TIMESTAMP()) * 1000)::BIGINT;")
+                appendLine("            uuid_bytes := public.gen_random_bytes(16);")
+                appendLine("            uuid_bytes := OVERLAY(uuid_bytes PLACING substring(int8send(unix_ts_ms) FROM 3) FROM 1 FOR 6);")
+                appendLine("            uuid_bytes := SET_BYTE(uuid_bytes, 6, (GET_BYTE(uuid_bytes, 6) & 15) | 112);")
+                appendLine("            uuid_bytes := SET_BYTE(uuid_bytes, 8, (GET_BYTE(uuid_bytes, 8) & 63) | 128);")
+                appendLine("            RETURN encode(uuid_bytes, 'hex')::UUID;")
+                appendLine("        END;")
+                appendLine($$"        $fn$ LANGUAGE plpgsql VOLATILE;")
+                appendLine("    END IF;")
+                appendLine("END")
+                appendLine("$$;")
+            }
 
-            UUIDType.UUID_V4 ->
-                listOf(
-                    "-- Setup UUID v4",
-                    "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\" SCHEMA public;"
-                ).joinToString("\n")
+            UUIDType.UUID_V4 -> listOf(
+                "-- Setup UUID v4", "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\" SCHEMA public;"
+            ).joinToString("\n")
         }
 
         private fun resolveEmbeddedColumns(field: Field): List<ColumnDef> {
             val prefix = toSnakeCase(field.name) + "_"
             val type = field.type
 
-            if (!type.isAnnotationPresent(Embeddable::class.java))
-                return emptyList()
+            if (!type.isAnnotationPresent(Embeddable::class.java)) return emptyList()
 
             val overrides = mutableMapOf<String, Column>()
-            field.getAnnotationsByType(AttributeOverride::class.java)
-                .forEach { overrides[it.name] = it.column }
+            field.getAnnotationsByType(AttributeOverride::class.java).forEach { overrides[it.name] = it.column }
             field.getAnnotation(AttributeOverrides::class.java)?.value?.forEach {
                 overrides[it.name] = it.column
             }
 
             val out = mutableListOf<ColumnDef>()
 
-            type.declaredFields
-                .filter { !it.isSynthetic && !Modifier.isStatic(it.modifiers) }
-                .forEach { ef ->
-                    val override = overrides[ef.name]
-                    val colAnn = override ?: ef.getAnnotation(Column::class.java)
+            type.declaredFields.filter { !it.isSynthetic && !Modifier.isStatic(it.modifiers) }.forEach { ef ->
+                val override = overrides[ef.name]
+                val colAnn = override ?: ef.getAnnotation(Column::class.java)
 
-                    val colName = override?.name?.takeIf { it.isNotBlank() }
-                        ?: colAnn?.name?.takeIf { it.isNotBlank() }
-                        ?: (prefix + toSnakeCase(ef.name))
+                val colName = override?.name?.takeIf { it.isNotBlank() } ?: colAnn?.name?.takeIf { it.isNotBlank() }
+                ?: (prefix + toSnakeCase(ef.name))
 
-                    val nullable = colAnn?.nullable ?: true
-                    val typeStr = sqlType(ef, colAnn)
-                    val cons = if (!nullable) listOf("NOT NULL") else emptyList()
+                val nullable = colAnn?.nullable ?: true
+                val typeStr = sqlType(ef, colAnn)
+                val cons = if (!nullable) listOf("NOT NULL") else emptyList()
 
-                    out.add(ColumnDef(colName, typeStr, cons))
-                }
+                out.add(ColumnDef(colName, typeStr, cons))
+            }
 
             return out
         }
@@ -525,17 +490,14 @@ class SchemaGenerator(
 
                 allPersistentFields(e).forEach { f ->
                     val rel =
-                        f.findAnnotationOnFieldOrGetter<ManyToOne>(e)
-                            ?: f.findAnnotationOnFieldOrGetter<OneToOne>(e)
+                        f.findAnnotationOnFieldOrGetter<ManyToOne>(e) ?: f.findAnnotationOnFieldOrGetter<OneToOne>(e)
                     if (rel == null) return@forEach
 
                     val join = f.findAnnotationOnFieldOrGetter<JoinColumn>(e)
-                    val colName =
-                        join?.name?.ifBlank { null } ?: "${toSnakeCase(f.name)}_id"
+                    val colName = join?.name?.ifBlank { null } ?: "${toSnakeCase(f.name)}_id"
                     val refTable = getTableName(f.type)
 
-                    val fkName =
-                        join?.foreignKey?.name?.ifBlank { null } ?: "fk_${table}_${colName}"
+                    val fkName = join?.foreignKey?.name?.ifBlank { null } ?: "fk_${table}_${colName}"
 
                     val nullable = join?.nullable ?: true
                     val deleteRule = if (nullable) "SET NULL" else "CASCADE"
@@ -548,8 +510,7 @@ class SchemaGenerator(
                             appendLine("    FOREIGN KEY ($colName)")
                             appendLine("    REFERENCES $refTable(id)")
                             appendLine("    ON DELETE $deleteRule;")
-                        }
-                    )
+                        })
                 }
             }
             return out
@@ -577,32 +538,29 @@ class SchemaGenerator(
                             append("CREATE ")
                             append(unique)
                             append("INDEX $name ON $table (${idx.columnList});")
-                        }
-                    )
+                        })
                 }
 
                 // FK indexes + heuristics
                 allPersistentFields(e).forEach { f ->
 
                     // FK index
-                    if (
-                        f.findAnnotationOnFieldOrGetter<ManyToOne>(e) != null ||
-                        f.findAnnotationOnFieldOrGetter<OneToOne>(e) != null
+                    if (f.findAnnotationOnFieldOrGetter<ManyToOne>(e) != null || f.findAnnotationOnFieldOrGetter<OneToOne>(
+                            e
+                        ) != null
                     ) {
                         val join = f.findAnnotationOnFieldOrGetter<JoinColumn>(e)
                         val col = join?.name?.ifBlank { null } ?: "${toSnakeCase(f.name)}_id"
 
-                        val custom =
-                            tableAnn?.indexes?.any { idx ->
-                                idx.columnList.split(",").any { it.trim() == col }
-                            } ?: false
+                        val custom = tableAnn?.indexes?.any { idx ->
+                            idx.columnList.split(",").any { it.trim() == col }
+                        } ?: false
                         if (!custom) {
                             out.add(
                                 buildString {
                                     appendLine("-- Index on foreign key: $table.$col")
                                     appendLine("CREATE INDEX idx_${table}_${col} ON $table ($col);")
-                                }
-                            )
+                                })
                         }
                         return@forEach
                     }
@@ -615,8 +573,7 @@ class SchemaGenerator(
                             buildString {
                                 appendLine("-- Lookup index on $table.$name")
                                 appendLine("CREATE INDEX idx_${table}_${name} ON $table ($name);")
-                            }
-                        )
+                            })
                     }
                 }
             }
@@ -627,9 +584,7 @@ class SchemaGenerator(
     }
 
     private data class ColumnDef(
-        val name: String,
-        val type: String,
-        val constraints: List<String>
+        val name: String, val type: String, val constraints: List<String>
     ) {
         fun toSql(maxName: Int, maxType: Int): String {
             val n = name.padEnd(maxName)
@@ -650,8 +605,7 @@ class SchemaGenerator(
 
             urls.forEach { url ->
                 val dir = File(url.toURI())
-                if (dir.exists() && dir.isDirectory)
-                    scanDirectory(dir, out)
+                if (dir.exists() && dir.isDirectory) scanDirectory(dir, out)
             }
 
             return out
@@ -669,9 +623,7 @@ class SchemaGenerator(
                 val start = abs.indexOf(pkgPath)
                 if (start == -1) return@forEach
 
-                val classPath = abs.substring(start)
-                    .removeSuffix(".class")
-                    .replace(File.separatorChar, '.')
+                val classPath = abs.substring(start).removeSuffix(".class").replace(File.separatorChar, '.')
 
                 try {
                     val clazz = Class.forName(classPath)
@@ -684,4 +636,46 @@ class SchemaGenerator(
             }
         }
     }
+
+    private fun hashOf(text: String): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        val h = md.digest(text.toByteArray())
+        return h.joinToString("") { "%02x".format(it) }.take(16)
+    }
+
+    private fun addHeaderWithHash(sql: String): String {
+        val hash = hashOf(sql)
+        return buildString {
+            appendLine("-- HASH: $hash")
+            append(sql)
+        }
+    }
+
+    private fun writeMigrationFile(targetDir: File, baseName: String, content: String) {
+
+        val newHash = hashOf(content)
+
+        val existingFiles =
+            targetDir.listFiles().orEmpty().filter { it.name.matches(Regex("""V\d{8}_\d{6}__${baseName}\.sql""")) }
+
+        val exactMatch = existingFiles.firstOrNull { file ->
+            val first = file.useLines { it.firstOrNull() }
+            first?.startsWith("-- HASH:") == true && first.substringAfter(": ").trim() == newHash
+        }
+
+        if (exactMatch != null) {
+            logger.info { "Skipped (unchanged): ${exactMatch.name}" }
+            return
+        }
+
+
+        val newFile = File(targetDir, "V${timestamp()}__${baseName}.sql")
+
+        val finalContent = addHeaderWithHash(content)
+        newFile.writeText(finalContent)
+
+        logger.info { "Created: ${newFile.name}" }
+    }
+
+
 }
