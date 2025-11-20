@@ -17,7 +17,7 @@ class SchemaGenerator(
     private val uuidType: UUIDType = UUIDType.UUID_V7,
     private val provider: SchemaProvider = DefaultSchemaProvider(),
     private val clearTargetFolders: Boolean = false,
-    private val migrationMode: MigrationMode = MigrationMode.CREATE_ONLY
+    private val migrationMode: MigrationMode = MigrationMode.SMART
 ) {
 
     private val logger = Logger(javaClass)
@@ -99,6 +99,11 @@ class SchemaGenerator(
         val target = prepareTargetDirectory(schema)
         val migrationGen = MigrationGenerator()
 
+        val sortedEntities = entities.sortedBy { stableSortKey(getTableName(it)) }
+        val sortNumberMap = sortedEntities.mapIndexed { index, entity ->
+            getTableName(entity) to (1000 + index).toString().padStart(4, '0')
+        }.toMap()
+
         entities.forEach { entity ->
             val table = getTableName(entity)
             val currentSchema = extractCurrentSchema(entity)
@@ -116,7 +121,7 @@ class SchemaGenerator(
             if (diff.isEmpty()) {
                 logger.info { "No changes detected for $table" }
             } else {
-                val sortNumber = generateMigrationNumber()
+                val sortNumber = sortNumberMap[table] ?: generateMigrationNumber()
                 val sql = formatPlainSql(diff)
                 writeMigrationFile(
                     targetDir = target, sortNumber = sortNumber, baseName = "alter_${table}_table", content = sql
@@ -246,6 +251,7 @@ class SchemaGenerator(
         }
     }
 
+    //TODO
     private fun generateMigrationNumber(): String {
         val timestamp = LocalDateTime.now()
         return "%04d%02d%02d%02d%02d".format(
@@ -316,7 +322,6 @@ class SchemaGenerator(
                 targetDir = target, sortNumber = sortNumber, baseName = "create_${table}_table", content = sql
             )
 
-            // Speichere Schema-State auch bei CREATE
             val currentSchema = extractCurrentSchema(entity)
             schemaStateTracker.saveTableSchema(schema, table, currentSchema)
         }
@@ -825,6 +830,53 @@ class SchemaGenerator(
     }
 
     internal fun testFindEntities(): List<Class<*>> = entityScanner.findEntities()
+
+    internal fun testGenerateAlterForTest(
+        entityClass: Class<*>,
+        schema: String,
+        oldSchema: TableSchema,
+        newSchema: TableSchema
+    ): File? {
+        executionTimestamp = LocalDateTime.now()
+
+        val target = prepareTargetDirectory(schema)
+        val migrationGen = MigrationGenerator()
+        val table = getTableName(entityClass)
+
+        val diff = migrationGen.compareSchemasAndGenerateMigration(
+            tableName = table,
+            entityClass = entityClass,
+            oldSchema = oldSchema,
+            newSchema = newSchema
+        )
+
+        if (diff.isEmpty()) {
+            logger.info { "No changes detected for $table" }
+            return null
+        }
+
+        // Berechne sortNumber basierend auf stableSortKey wie in generateAlterScripts
+        val allEntities = entityScanner.findEntities()
+        val sortedEntities = allEntities.sortedBy { stableSortKey(getTableName(it)) }
+        val sortNumber = sortedEntities.indexOfFirst { getTableName(it) == table }
+            .let { if (it >= 0) (1000 + it).toString().padStart(4, '0') else "9999" }
+
+        val sql = formatPlainSql(diff)
+        writeMigrationFile(
+            targetDir = target,
+            sortNumber = sortNumber,
+            baseName = "alter_${table}_table",
+            content = sql
+        )
+
+        val filename = provider.getFileName(
+            timestamp = executionTimestamp!!,
+            sortNumber = sortNumber,
+            baseName = "alter_${table}_table"
+        )
+
+        return File(target, filename)
+    }
 
 }
 

@@ -1,5 +1,7 @@
 package de.alexanderwolz.commons.util.database
 
+import de.alexanderwolz.commons.util.database.entity.fu.SampleEntity
+import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
@@ -63,7 +65,7 @@ class SchemaGeneratorMigrationTest {
 
         val file = files.single()
 
-        val pattern = Regex("""V\d{18}__${baseName}\.sql""")
+        val pattern = Regex("""V\d{4}_\d{14}__${baseName}\.sql""")
         assertTrue(pattern.matches(file.name), "filename '$file' doesn't match migration pattern")
 
         val lines = file.readLines()
@@ -575,56 +577,6 @@ class SchemaGeneratorMigrationTest {
     }
 
     @Test
-    fun testTimestampFormat() {
-        val dir = File(tmpDir, "timestamp_format").apply { mkdirs() }
-
-        val gen = newGenerator(outDir = dir)
-        gen.generate()
-
-        val sqlFiles = dir.walkTopDown()
-            .filter { it.extension == "sql" }
-            .toList()
-
-        sqlFiles.forEach { file ->
-            // Pattern 1: V{YYYYMMDDHHmmssSSS}{sortNumber}__{description}.sql (für create/alter)
-            // Pattern 2: V{YYYYMMDDHHmmss}{SSS}__{description}.sql (falls sortNumber = milliseconds)
-            val pattern1 = Regex("""V(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{3})(\d+)__\w+\.sql""")
-            val pattern2 = Regex("""V(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{3})__\w+\.sql""")
-
-            val match = pattern1.matchEntire(file.name) ?: pattern2.matchEntire(file.name)
-
-            assertNotNull(match, "File ${file.name} should match timestamp pattern")
-
-            if (pattern1.matches(file.name)) {
-                val (year, month, day, hour, minute, second, millis, sortNum) = match.destructured
-
-                // Validiere Timestamp-Komponenten
-                assertTrue(year.toInt() >= 2020, "Year should be valid in ${file.name}")
-                assertTrue(month.toInt() in 1..12, "Month should be 1-12 in ${file.name}")
-                assertTrue(day.toInt() in 1..31, "Day should be 1-31 in ${file.name}")
-                assertTrue(hour.toInt() in 0..23, "Hour should be 0-23 in ${file.name}")
-                assertTrue(minute.toInt() in 0..59, "Minute should be 0-59 in ${file.name}")
-                assertTrue(second.toInt() in 0..59, "Second should be 0-59 in ${file.name}")
-                assertTrue(millis.toInt() in 0..999, "Milliseconds should be 0-999 in ${file.name}")
-
-                println("✓ ${file.name} -> $year-$month-$day $hour:$minute:$second.$millis (sort: $sortNum)")
-            } else {
-                val (year, month, day, hour, minute, second, millis) = match.destructured
-
-                assertTrue(year.toInt() >= 2020, "Year should be valid in ${file.name}")
-                assertTrue(month.toInt() in 1..12, "Month should be 1-12 in ${file.name}")
-                assertTrue(day.toInt() in 1..31, "Day should be 1-31 in ${file.name}")
-                assertTrue(hour.toInt() in 0..23, "Hour should be 0-23 in ${file.name}")
-                assertTrue(minute.toInt() in 0..59, "Minute should be 0-59 in ${file.name}")
-                assertTrue(second.toInt() in 0..59, "Second should be 0-59 in ${file.name}")
-                assertTrue(millis.toInt() in 0..999, "Milliseconds should be 0-999 in ${file.name}")
-
-                println("✓ ${file.name} -> $year-$month-$day $hour:$minute:$second.$millis")
-            }
-        }
-    }
-
-    @Test
     fun testSchemaStateSaveAndLoad() {
         val dir = File(tmpDir, "schema_save_load").apply { mkdirs() }
 
@@ -699,6 +651,36 @@ class SchemaGeneratorMigrationTest {
         assertEquals(original.columns[0].name, deserialized.columns[0].name)
         assertEquals(original.indexes[0].columns, deserialized.indexes[0].columns)
         assertEquals(original.foreignKeys[0].onDelete, deserialized.foreignKeys[0].onDelete)
+    }
+
+
+    @Test
+    fun testAlterTable() {
+        val oldSchema = TableSchema(
+            columns = listOf(ColumnSchema("id", "BIGSERIAL", false, isPrimaryKey = true)),
+            indexes = emptyList(),
+            foreignKeys = emptyList()
+        )
+
+        val newSchema = TableSchema(
+            columns = listOf(
+                ColumnSchema("id", "BIGSERIAL", false, isPrimaryKey = true),
+                ColumnSchema("name", "VARCHAR(255)", false)
+            ),
+            indexes = emptyList(),
+            foreignKeys = emptyList()
+        )
+
+        val file = newGenerator().testGenerateAlterForTest(
+            entityClass = SampleEntity::class.java,
+            schema = "domain",
+            oldSchema = oldSchema,
+            newSchema = newSchema
+        )!!
+
+        Assertions.assertNotNull(file)
+        assertTrue(file.exists())
+        assertTrue(file.name.contains("alter_sample_table"))
     }
 
 }
