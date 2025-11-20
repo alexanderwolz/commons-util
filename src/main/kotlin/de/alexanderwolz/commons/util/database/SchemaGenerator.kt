@@ -16,7 +16,8 @@ class SchemaGenerator(
     private val databaseType: DatabaseType = DatabaseType.POSTGRES,
     private val uuidType: UUIDType = UUIDType.UUID_V7,
     private val provider: SchemaProvider = DefaultSchemaProvider(),
-    private val clearTargetFolders: Boolean = false
+    private val clearTargetFolders: Boolean = false,
+    private val migrationMode: MigrationMode = MigrationMode.SMART
 ) {
 
     private val logger = Logger(javaClass)
@@ -24,33 +25,232 @@ class SchemaGenerator(
 
     enum class DatabaseType { POSTGRES, MARIADB }
     enum class UUIDType { UUID_V4, UUID_V7 }
+    enum class MigrationMode { CREATE_ONLY, ALTER_ONLY, SMART }
 
     private var executionTimestamp: LocalDateTime? = null
+    private val schemaStateTracker = SchemaStateTracker(outDir)
 
 
     fun generate() {
         try {
-            executionTimestamp = LocalDateTime.now() //ensure the same timestamp for all files
+            executionTimestamp = LocalDateTime.now()
 
             logger.info { "Generating SQL migrations from classes within '$basePackage'" }
-            logger.info { "Database Type: $databaseType, UUID Type: $uuidType" }
+            logger.info { "Database Type: $databaseType, UUID Type: $uuidType, Mode: $migrationMode" }
 
             val rawEntities = entityScanner.findEntities()
-
             validateUniqueTableNames(rawEntities)
             val entities = rawEntities.sortedBy { stableSortKey(getTableName(it)) }
 
-            generateSetupFiles(entities)
-
-            groupByPartition(entities).forEach { (schema, entitiesInPartition) ->
-                val sorted = entitiesInPartition.sortedBy { stableSortKey(getTableName(it)) }
-                generateFiles(sorted, schema)
+            when (migrationMode) {
+                MigrationMode.CREATE_ONLY -> generateCreateMode(entities)
+                MigrationMode.ALTER_ONLY -> generateAlterMode(entities)
+                MigrationMode.SMART -> generateSmartMode(entities)
             }
 
             logger.info { "done" }
         } finally {
             executionTimestamp = LocalDateTime.now()
         }
+    }
+
+    private fun generateCreateMode(entities: List<Class<*>>) {
+        generateSetupFiles(entities)
+        groupByPartition(entities).forEach { (schema, entitiesInPartition) ->
+            val sorted = entitiesInPartition.sortedBy { stableSortKey(getTableName(it)) }
+            generateFiles(sorted, schema)
+        }
+    }
+
+    private fun generateAlterMode(entities: List<Class<*>>) {
+        groupByPartition(entities).forEach { (schema, entitiesInPartition) ->
+            val sorted = entitiesInPartition.sortedBy { stableSortKey(getTableName(it)) }
+            generateAlterScripts(sorted, schema)
+        }
+    }
+
+    private fun generateSmartMode(entities: List<Class<*>>) {
+        val existingTables = schemaStateTracker.getExistingTables()
+
+        val newEntities = entities.filter { getTableName(it) !in existingTables }
+        val existingEntities = entities.filter { getTableName(it) in existingTables }
+
+        if (newEntities.isNotEmpty()) {
+            logger.info { "Found ${newEntities.size} new entities -> generating CREATE scripts" }
+            generateSetupFiles(newEntities)
+            groupByPartition(newEntities).forEach { (schema, entitiesInPartition) ->
+                val sorted = entitiesInPartition.sortedBy { stableSortKey(getTableName(it)) }
+                generateFiles(sorted, schema)
+            }
+        }
+
+        if (existingEntities.isNotEmpty()) {
+            logger.info { "Found ${existingEntities.size} existing entities -> checking for changes" }
+            groupByPartition(existingEntities).forEach { (schema, entitiesInPartition) ->
+                val sorted = entitiesInPartition.sortedBy { stableSortKey(getTableName(it)) }
+                generateAlterScripts(sorted, schema)
+            }
+        }
+    }
+
+    private fun generateAlterScripts(entities: List<Class<*>>, schema: String) {
+        if (entities.isEmpty()) return
+
+        val target = prepareTargetDirectory(schema)
+        val migrationGen = MigrationGenerator()
+
+        entities.forEach { entity ->
+            val table = getTableName(entity)
+            val currentSchema = extractCurrentSchema(entity)
+            val previousSchema = schemaStateTracker.loadTableSchema(schema, table)
+
+            if (previousSchema == null) {
+                logger.warn { "No previous schema found for $table - consider using CREATE mode first" }
+                return@forEach
+            }
+
+            val diff = migrationGen.compareSchemasAndGenerateMigration(
+                tableName = table, entityClass = entity, oldSchema = previousSchema, newSchema = currentSchema
+            )
+
+            if (diff.isEmpty()) {
+                logger.info { "No changes detected for $table" }
+            } else {
+                val sortNumber = generateMigrationNumber()
+                val sql = formatPlainSql(diff)
+                writeMigrationFile(
+                    targetDir = target, sortNumber = sortNumber, baseName = "alter_${table}_table", content = sql
+                )
+
+                schemaStateTracker.saveTableSchema(schema, table, currentSchema)
+            }
+        }
+    }
+
+    private fun getIdType(entityClass: Class<*>): String {
+        val idField = entityClass.idField() ?: return if (databaseType == DatabaseType.POSTGRES) "BIGINT" else "BIGINT"
+
+        val col = idField.getAnnotation(Column::class.java)
+        val gen = idField.getAnnotation(GeneratedValue::class.java)
+
+        if (gen?.strategy == GenerationType.UUID) return if (databaseType == DatabaseType.POSTGRES) "UUID" else "CHAR(36)"
+
+        if (gen?.strategy == GenerationType.IDENTITY) return if (databaseType == DatabaseType.POSTGRES) "BIGSERIAL" else "BIGINT"
+
+        if (idField.type.simpleName == "UUID") return if (databaseType == DatabaseType.POSTGRES) "UUID" else "CHAR(36)"
+
+        return sqlType(idField, col)
+    }
+
+    private fun extractCurrentSchema(entity: Class<*>): TableSchema {
+        val columns = mutableListOf<ColumnSchema>()
+        val indexes = mutableListOf<IndexSchema>()
+        val foreignKeys = mutableListOf<ForeignKeySchema>()
+
+        allPersistentFields(entity).forEach { f ->
+            val colAnn = f.findAnnotationOnFieldOrGetter<Column>(entity)
+
+            // ID Field
+            if (f.findAnnotationOnFieldOrGetter<Id>(entity) != null) {
+                val colName = colAnn?.name?.ifBlank { null } ?: toSnakeCase(f.name)
+                val gen = f.findAnnotationOnFieldOrGetter<GeneratedValue>(entity)
+                val type = when (gen?.strategy) {
+                    GenerationType.UUID -> if (databaseType == DatabaseType.POSTGRES) "UUID" else "CHAR(36)"
+                    GenerationType.IDENTITY -> if (databaseType == DatabaseType.POSTGRES) "BIGSERIAL" else "BIGINT"
+                    else -> sqlType(f, colAnn)
+                }
+                columns.add(ColumnSchema(colName, type, nullable = false, isPrimaryKey = true))
+                return@forEach
+            }
+
+            // Relations
+            val relMany = f.findAnnotationOnFieldOrGetter<ManyToOne>(entity)
+            val relOne = f.findAnnotationOnFieldOrGetter<OneToOne>(entity)
+            if (relMany != null || relOne != null) {
+                val join = f.findAnnotationOnFieldOrGetter<JoinColumn>(entity)
+                val name = join?.name?.ifBlank { null } ?: "${toSnakeCase(f.name)}_id"
+                val nullable = join?.nullable ?: true
+                val refType = getIdType(f.type)
+                val refTable = getTableName(f.type)
+
+                columns.add(ColumnSchema(name, refType, nullable))
+                foreignKeys.add(
+                    ForeignKeySchema(
+                        columnName = name,
+                        referencedTable = refTable,
+                        referencedColumn = "id",
+                        onDelete = if (nullable) "SET NULL" else "CASCADE"
+                    )
+                )
+                return@forEach
+            }
+
+            // Skip collections
+            if (f.findAnnotationOnFieldOrGetter<OneToMany>(entity) != null || f.findAnnotationOnFieldOrGetter<ManyToMany>(
+                    entity
+                ) != null
+            ) return@forEach
+
+            // Embedded
+            if (f.findAnnotationOnFieldOrGetter<Embedded>(entity) != null) {
+                columns.addAll(extractEmbeddedSchema(f))
+                return@forEach
+            }
+
+            // Normal columns
+            val name = colAnn?.name?.ifBlank { null } ?: toSnakeCase(f.name)
+            val type = sqlType(f, colAnn)
+            val nullable = colAnn?.nullable ?: true
+            val unique = colAnn?.unique ?: false
+            val defaultValue = timestampDefault(name)
+
+            columns.add(ColumnSchema(name, type, nullable, unique = unique, defaultValue = defaultValue))
+        }
+
+        // Extract indexes
+        val tableAnn = entity.getAnnotation(Table::class.java)
+        tableAnn?.indexes?.forEach { idx ->
+            indexes.add(
+                IndexSchema(
+                    name = idx.name, columns = idx.columnList.split(",").map { it.trim() }, unique = idx.unique
+                )
+            )
+        }
+
+        return TableSchema(columns, indexes, foreignKeys)
+    }
+
+    private fun extractEmbeddedSchema(field: Field): List<ColumnSchema> {
+        val prefix = toSnakeCase(field.name) + "_"
+        val type = field.type
+
+        if (!type.isAnnotationPresent(Embeddable::class.java)) return emptyList()
+
+        val overrides = mutableMapOf<String, Column>()
+        field.getAnnotationsByType(AttributeOverride::class.java).forEach {
+            overrides[it.name] = it.column
+        }
+        field.getAnnotation(AttributeOverrides::class.java)?.value?.forEach {
+            overrides[it.name] = it.column
+        }
+
+        return type.declaredFields.filter { !it.isSynthetic && !Modifier.isStatic(it.modifiers) }.map { ef ->
+            val override = overrides[ef.name]
+            val colAnn = override ?: ef.getAnnotation(Column::class.java)
+            val colName =
+                override?.name?.ifBlank { null } ?: colAnn?.name?.ifBlank { null } ?: (prefix + toSnakeCase(ef.name))
+            val nullable = colAnn?.nullable ?: true
+            val typeStr = sqlType(ef, colAnn)
+
+            ColumnSchema(colName, typeStr, nullable)
+        }
+    }
+
+    private fun generateMigrationNumber(): String {
+        val timestamp = LocalDateTime.now()
+        return "%04d%02d%02d%02d%02d".format(
+            timestamp.year, timestamp.monthValue, timestamp.dayOfMonth, timestamp.hour, timestamp.minute
+        )
     }
 
     private fun validateUniqueTableNames(entities: List<Class<*>>) {
@@ -94,10 +294,7 @@ class SchemaGenerator(
                 val target = prepareTargetDirectory(setupFolder)
                 val sql = formatPlainSql(TableSqlGenerator().generateUuidExtensionSetup())
                 writeMigrationFile(
-                    targetDir = target,
-                    sortNumber = "0001",
-                    baseName = "setup_uuid_extension",
-                    content = sql
+                    targetDir = target, sortNumber = "0001", baseName = "setup_uuid_extension", content = sql
                 )
             }
         }
@@ -116,21 +313,19 @@ class SchemaGenerator(
             val sql = formatCreateTableSql(tableGen.generateCreateTableSql(entity, table))
             val sortNumber = (1000 + index).toString().padStart(4, '0')
             writeMigrationFile(
-                targetDir = target,
-                sortNumber = sortNumber,
-                baseName = "create_${table}_table",
-                content = sql
+                targetDir = target, sortNumber = sortNumber, baseName = "create_${table}_table", content = sql
             )
+
+            // Speichere Schema-State auch bei CREATE
+            val currentSchema = extractCurrentSchema(entity)
+            schemaStateTracker.saveTableSchema(schema, table, currentSchema)
         }
 
         val fkList = fkGen.generateAllForeignKeys(entities)
         if (fkList.isNotEmpty()) {
             val sql = "-- Foreign Keys\n" + fkList.joinToString("\n\n")
             writeMigrationFile(
-                targetDir = target,
-                sortNumber = "5000",
-                baseName = "add_foreign_keys",
-                content = formatPlainSql(sql)
+                targetDir = target, sortNumber = "5000", baseName = "add_foreign_keys", content = formatPlainSql(sql)
             )
         }
 
@@ -138,10 +333,7 @@ class SchemaGenerator(
         if (idxList.isNotEmpty()) {
             val sql = "-- Indexes\n" + idxList.joinToString("\n\n")
             writeMigrationFile(
-                targetDir = target,
-                sortNumber = "9000",
-                baseName = "add_indexes",
-                content = formatPlainSql(sql)
+                targetDir = target, sortNumber = "9000", baseName = "add_indexes", content = formatPlainSql(sql)
             )
         }
     }
@@ -174,9 +366,7 @@ class SchemaGenerator(
         val parsed = lines.map { line ->
             val parts = line.trim().split(Regex("\\s+"), limit = 3)
             Col(
-                name = parts.getOrNull(0) ?: "",
-                type = parts.getOrNull(1) ?: "",
-                rest = parts.getOrNull(2)
+                name = parts.getOrNull(0) ?: "", type = parts.getOrNull(1) ?: "", rest = parts.getOrNull(2)
             )
         }
 
@@ -194,8 +384,7 @@ class SchemaGenerator(
         }
     }
 
-    private fun formatPlainSql(sql: String): String =
-        sql.trim().replace(Regex("\\n{3,}"), "\n\n").trim() + "\n"
+    private fun formatPlainSql(sql: String): String = sql.trim().replace(Regex("\\n{3,}"), "\n\n").trim() + "\n"
 
     private fun prepareTargetDirectory(schemaKey: String): File {
         return File(outDir, schemaKey.lowercase()).apply {
@@ -212,9 +401,7 @@ class SchemaGenerator(
             ?: toSnakeCase(clazz.simpleName)
 
     private fun toSnakeCase(s: String): String =
-        s.replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
-            .replace(Regex("([A-Z]+)([A-Z][a-z])"), "$1_$2")
-            .lowercase()
+        s.replace(Regex("([a-z0-9])([A-Z])"), "$1_$2").replace(Regex("([A-Z]+)([A-Z][a-z])"), "$1_$2").lowercase()
 
     private fun Class<*>.idField(): Field? = allPersistentFields(this).firstOrNull {
         it.findAnnotationOnFieldOrGetter<Id>(this) != null
@@ -224,13 +411,9 @@ class SchemaGenerator(
         val map = LinkedHashMap<String, Field>()
         var c: Class<*>? = type
         while (c != null && c != Any::class.java) {
-            c.declaredFields
-                .filter {
-                    !Modifier.isStatic(it.modifiers)
-                            && !it.isSynthetic
-                            && it.getAnnotation(Transient::class.java) == null
-                }
-                .forEach { f -> map.putIfAbsent(f.name, f) }
+            c.declaredFields.filter {
+                !Modifier.isStatic(it.modifiers) && !it.isSynthetic && it.getAnnotation(Transient::class.java) == null
+            }.forEach { f -> map.putIfAbsent(f.name, f) }
             c = c.superclass
         }
         return map.values.toList()
@@ -346,19 +529,18 @@ class SchemaGenerator(
                     val gen = f.findAnnotationOnFieldOrGetter<GeneratedValue>(entity)
 
                     val type = when (gen?.strategy) {
-                        GenerationType.UUID ->
-                            if (databaseType == DatabaseType.POSTGRES) "UUID" else "CHAR(36)"
+                        GenerationType.UUID -> if (databaseType == DatabaseType.POSTGRES) "UUID" else "CHAR(36)"
 
-                        GenerationType.IDENTITY ->
-                            if (databaseType == DatabaseType.POSTGRES) "BIGSERIAL" else "BIGINT"
+                        GenerationType.IDENTITY -> if (databaseType == DatabaseType.POSTGRES) "BIGSERIAL" else "BIGINT"
 
                         else -> sqlType(f, colAnn)
                     }
 
                     val constraints = mutableListOf("PRIMARY KEY")
                     if (gen?.strategy == GenerationType.UUID) constraints.add(uuidDefaultSql())
-                    if (gen?.strategy == GenerationType.IDENTITY && databaseType == DatabaseType.MARIADB)
-                        constraints.add("AUTO_INCREMENT")
+                    if (gen?.strategy == GenerationType.IDENTITY && databaseType == DatabaseType.MARIADB) constraints.add(
+                        "AUTO_INCREMENT"
+                    )
 
                     cols.add(ColumnDef(colName, type, constraints))
                     return@forEach
@@ -379,9 +561,9 @@ class SchemaGenerator(
                 }
 
                 // Skip OneToMany or ManyToMany
-                if (
-                    f.findAnnotationOnFieldOrGetter<OneToMany>(entity) != null ||
-                    f.findAnnotationOnFieldOrGetter<ManyToMany>(entity) != null
+                if (f.findAnnotationOnFieldOrGetter<OneToMany>(entity) != null || f.findAnnotationOnFieldOrGetter<ManyToMany>(
+                        entity
+                    ) != null
                 ) return@forEach
 
                 // ----- EMBEDDED -----
@@ -417,25 +599,6 @@ class SchemaGenerator(
                 appendLine()
                 appendLine(");")
             }
-        }
-
-        private fun getIdType(entityClass: Class<*>): String {
-            val idField = entityClass.idField()
-                ?: return if (databaseType == DatabaseType.POSTGRES) "BIGINT" else "BIGINT"
-
-            val col = idField.getAnnotation(Column::class.java)
-            val gen = idField.getAnnotation(GeneratedValue::class.java)
-
-            if (gen?.strategy == GenerationType.UUID)
-                return if (databaseType == DatabaseType.POSTGRES) "UUID" else "CHAR(36)"
-
-            if (gen?.strategy == GenerationType.IDENTITY)
-                return if (databaseType == DatabaseType.POSTGRES) "BIGSERIAL" else "BIGINT"
-
-            if (idField.type.simpleName == "UUID")
-                return if (databaseType == DatabaseType.POSTGRES) "UUID" else "CHAR(36)"
-
-            return sqlType(idField, col)
         }
 
         fun generateUuidExtensionSetup(): String {
@@ -492,22 +655,19 @@ class SchemaGenerator(
 
             val result = mutableListOf<ColumnDef>()
 
-            type.declaredFields
-                .filter { !it.isSynthetic && !Modifier.isStatic(it.modifiers) }
-                .forEach { ef ->
-                    val override = overrides[ef.name]
-                    val colAnn = override ?: ef.getAnnotation(Column::class.java)
+            type.declaredFields.filter { !it.isSynthetic && !Modifier.isStatic(it.modifiers) }.forEach { ef ->
+                val override = overrides[ef.name]
+                val colAnn = override ?: ef.getAnnotation(Column::class.java)
 
-                    val colName = override?.name?.ifBlank { null }
-                        ?: colAnn?.name?.ifBlank { null }
-                        ?: (prefix + toSnakeCase(ef.name))
+                val colName = override?.name?.ifBlank { null } ?: colAnn?.name?.ifBlank { null }
+                ?: (prefix + toSnakeCase(ef.name))
 
-                    val nullable = colAnn?.nullable ?: true
-                    val typeStr = sqlType(ef, colAnn)
-                    val cons = if (!nullable) listOf("NOT NULL") else emptyList()
+                val nullable = colAnn?.nullable ?: true
+                val typeStr = sqlType(ef, colAnn)
+                val cons = if (!nullable) listOf("NOT NULL") else emptyList()
 
-                    result.add(ColumnDef(colName, typeStr, cons))
-                }
+                result.add(ColumnDef(colName, typeStr, cons))
+            }
 
             return result
         }
@@ -523,8 +683,7 @@ class SchemaGenerator(
 
                 allPersistentFields(e).forEach { f ->
                     val rel =
-                        f.findAnnotationOnFieldOrGetter<ManyToOne>(e)
-                            ?: f.findAnnotationOnFieldOrGetter<OneToOne>(e)
+                        f.findAnnotationOnFieldOrGetter<ManyToOne>(e) ?: f.findAnnotationOnFieldOrGetter<OneToOne>(e)
                     if (rel == null) return@forEach
 
                     val join = f.findAnnotationOnFieldOrGetter<JoinColumn>(e)
@@ -542,8 +701,7 @@ class SchemaGenerator(
                             appendLine("    FOREIGN KEY ($colName)")
                             appendLine("    REFERENCES $refTable(id)")
                             appendLine("    ON DELETE $deleteRule;")
-                        }
-                    )
+                        })
                 }
             }
 
@@ -572,17 +730,16 @@ class SchemaGenerator(
                             append("CREATE ")
                             append(unique)
                             append("INDEX $name ON $table (${idx.columnList});")
-                        }
-                    )
+                        })
                 }
 
                 // ------ Foreign-key indexes + heuristics ------
                 allPersistentFields(e).forEach { f ->
 
                     // FK index
-                    if (
-                        f.findAnnotationOnFieldOrGetter<ManyToOne>(e) != null ||
-                        f.findAnnotationOnFieldOrGetter<OneToOne>(e) != null
+                    if (f.findAnnotationOnFieldOrGetter<ManyToOne>(e) != null || f.findAnnotationOnFieldOrGetter<OneToOne>(
+                            e
+                        ) != null
                     ) {
                         val join = f.findAnnotationOnFieldOrGetter<JoinColumn>(e)
                         val col = join?.name?.ifBlank { null } ?: "${toSnakeCase(f.name)}_id"
@@ -597,8 +754,7 @@ class SchemaGenerator(
                                 buildString {
                                     appendLine("-- Index on foreign key: $table.$col")
                                     appendLine("CREATE INDEX idx_${table}_${col} ON $table ($col);")
-                                }
-                            )
+                                })
                         }
                         return@forEach
                     }
@@ -611,8 +767,7 @@ class SchemaGenerator(
                             buildString {
                                 appendLine("-- Lookup index on $table.$name")
                                 appendLine("CREATE INDEX idx_${table}_${name} ON $table ($name);")
-                            }
-                        )
+                            })
                     }
                 }
             }
@@ -637,20 +792,14 @@ class SchemaGenerator(
         val newHash = hashOf(content)
 
         val pattern = provider.getFileNameRegex(
-            timestamp = executionTimestamp!!,
-            sortNumber = sortNumber,
-            baseName = baseName
+            timestamp = executionTimestamp!!, sortNumber = sortNumber, baseName = baseName
         )
 
-        val existingFiles = targetDir
-            .listFiles()
-            .orEmpty()
-            .filter { it.name.matches(pattern) }
+        val existingFiles = targetDir.listFiles().orEmpty().filter { it.name.matches(pattern) }
 
         val exactMatch = existingFiles.firstOrNull { file ->
             val first = file.useLines { it.firstOrNull() }
-            first?.startsWith("-- HASH:") == true &&
-                    first.substringAfter(": ").trim() == newHash
+            first?.startsWith("-- HASH:") == true && first.substringAfter(": ").trim() == newHash
         }
 
         if (exactMatch != null) {
@@ -660,9 +809,7 @@ class SchemaGenerator(
 
 
         val filename = provider.getFileName(
-            timestamp = executionTimestamp!!,
-            sortNumber = sortNumber,
-            baseName = baseName
+            timestamp = executionTimestamp!!, sortNumber = sortNumber, baseName = baseName
         )
 
         val newFile = File(targetDir, filename)
@@ -671,16 +818,13 @@ class SchemaGenerator(
     }
 
     internal fun testWriteFileForTest(
-        dir: File,
-        baseName: String,
-        sortNumber: String,
-        content: String
+        dir: File, baseName: String, sortNumber: String, content: String
     ) {
-        executionTimestamp = LocalDateTime.now() //needed for tests
+        executionTimestamp = LocalDateTime.now()
         writeMigrationFile(targetDir = dir, sortNumber = sortNumber, baseName = baseName, content = content)
     }
 
     internal fun testFindEntities(): List<Class<*>> = entityScanner.findEntities()
 
-
 }
+
