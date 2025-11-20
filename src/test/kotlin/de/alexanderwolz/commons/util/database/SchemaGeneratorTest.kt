@@ -2,7 +2,8 @@ package de.alexanderwolz.commons.util.database
 
 import de.alexanderwolz.commons.util.database.entity.bar.AnotherEntity
 import de.alexanderwolz.commons.util.database.entity.fu.SampleEntity
-import de.alexanderwolz.commons.util.database.provider.PackageProvider
+import de.alexanderwolz.commons.util.database.provider.DefaultSchemaProvider
+import de.alexanderwolz.commons.util.database.provider.SchemaProvider
 import jakarta.persistence.Table
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -120,7 +121,7 @@ class SchemaGeneratorTest {
 
     @Test
     fun testGroupingByPackage() {
-        val strategy = object : PackageProvider {
+        val strategy = object : DefaultSchemaProvider() {
             override fun getFolderFor(entityClass: Class<*>, root: File) = entityClass.packageName.split(".").last()
             override fun getSetupFolder(root: File): String = "setup"
         }

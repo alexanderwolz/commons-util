@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "de.alexanderwolz"
-version = "1.5.9"
+version = "1.6.0"
 
 repositories {
     mavenCentral()
@@ -34,6 +34,8 @@ dependencies {
 
     compileOnly("org.bouncycastle:bcpkix-jdk18on:1.81")
     compileOnly("jakarta.persistence:jakarta.persistence-api:3.1.0")
+    compileOnly("com.fasterxml.jackson.module:jackson-module-kotlin:2.17.0")
+    compileOnly("com.fasterxml.jackson.core:jackson-databind:2.17.0")
 
     testImplementation(kotlin("test"))
     testImplementation("org.slf4j:slf4j-simple:2.0.17")
@@ -42,6 +44,8 @@ dependencies {
     testImplementation("com.fasterxml.jackson.core:jackson-databind:2.17.0")
     testImplementation("com.fasterxml.jackson.core:jackson-core:2.17.0")
     testImplementation("com.fasterxml.jackson.core:jackson-annotations:2.17.0")
+    testImplementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.17.0")
+    testImplementation("com.fasterxml.jackson.core:jackson-databind:2.17.0")
 }
 
 tasks.test {
