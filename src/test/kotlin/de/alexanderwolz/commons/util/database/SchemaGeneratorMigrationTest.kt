@@ -65,7 +65,7 @@ class SchemaGeneratorMigrationTest {
 
         val file = files.single()
 
-        val pattern = Regex("""V\d{4}_\d{14}__${baseName}\.sql""")
+        val pattern = Regex("""V\d{18}__${baseName}\.sql""")
         assertTrue(pattern.matches(file.name), "filename '$file' doesn't match migration pattern")
 
         val lines = file.readLines()
