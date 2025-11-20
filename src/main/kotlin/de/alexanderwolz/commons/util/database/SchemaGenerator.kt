@@ -1,22 +1,21 @@
 package de.alexanderwolz.commons.util.database
 
 import de.alexanderwolz.commons.log.Logger
-import de.alexanderwolz.commons.util.database.provider.DefaultPackageProvider
-import de.alexanderwolz.commons.util.database.provider.PackageProvider
+import de.alexanderwolz.commons.util.database.provider.DefaultSchemaProvider
+import de.alexanderwolz.commons.util.database.provider.SchemaProvider
 import jakarta.persistence.*
 import java.io.File
 import java.lang.reflect.Field
 import java.lang.reflect.Modifier
 import java.security.MessageDigest
 import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 
 class SchemaGenerator(
     private val basePackage: String,
     private val outDir: File,
     private val databaseType: DatabaseType = DatabaseType.POSTGRES,
     private val uuidType: UUIDType = UUIDType.UUID_V7,
-    private val provider: PackageProvider = DefaultPackageProvider(),
+    private val provider: SchemaProvider = DefaultSchemaProvider(),
     private val clearTargetFolders: Boolean = false
 ) {
 
@@ -26,12 +25,12 @@ class SchemaGenerator(
     enum class DatabaseType { POSTGRES, MARIADB }
     enum class UUIDType { UUID_V4, UUID_V7 }
 
-    private var executionTimestamp = ""
+    private var executionTimestamp: LocalDateTime? = null
 
 
     fun generate() {
         try {
-            executionTimestamp = buildTimestamp() //ensure the same timestamp for all files
+            executionTimestamp = LocalDateTime.now() //ensure the same timestamp for all files
 
             logger.info { "Generating SQL migrations from classes within '$basePackage'" }
             logger.info { "Database Type: $databaseType, UUID Type: $uuidType" }
@@ -50,12 +49,8 @@ class SchemaGenerator(
 
             logger.info { "done" }
         } finally {
-            executionTimestamp = ""
+            executionTimestamp = LocalDateTime.now()
         }
-    }
-
-    private fun buildTimestamp(): String {
-        return DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(LocalDateTime.now())
     }
 
     private fun validateUniqueTableNames(entities: List<Class<*>>) {
@@ -641,7 +636,11 @@ class SchemaGenerator(
 
         val newHash = hashOf(content)
 
-        val pattern = Regex("""V\d{14}${sortNumber}__${baseName}\.sql""")
+        val pattern = provider.getFileNameRegex(
+            timestamp = executionTimestamp!!,
+            sortNumber = sortNumber,
+            baseName = baseName
+        )
 
         val existingFiles = targetDir
             .listFiles()
@@ -660,8 +659,11 @@ class SchemaGenerator(
         }
 
 
-        val version = executionTimestamp + sortNumber // e.g. 202511201733580001
-        val filename = "V${version}__${baseName}.sql"
+        val filename = provider.getFileName(
+            timestamp = executionTimestamp!!,
+            sortNumber = sortNumber,
+            baseName = baseName
+        )
 
         val newFile = File(targetDir, filename)
         newFile.writeText(addHeaderWithHash(content))
@@ -674,7 +676,7 @@ class SchemaGenerator(
         sortNumber: String,
         content: String
     ) {
-        executionTimestamp =  buildTimestamp() //needed for tests
+        executionTimestamp = LocalDateTime.now() //needed for tests
         writeMigrationFile(targetDir = dir, sortNumber = sortNumber, baseName = baseName, content = content)
     }
 
