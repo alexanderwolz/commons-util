@@ -87,7 +87,7 @@ class SchemaGenerator(
             if (usesUuid) {
                 val target = prepareTargetDirectory(commonFolder)
                 val sql = formatPlainSql(TableSqlGenerator().generateUuidExtensionSetup())
-                writeMigrationFile(target, "0001_setup_uuid_extension", sql)
+                writeMigrationFile(target, "0001", "setup_uuid_extension", sql)
             }
         }
     }
@@ -104,19 +104,19 @@ class SchemaGenerator(
             val table = getTableName(entity)
             val sql = formatCreateTableSql(tableGen.generateCreateTableSql(entity, table))
             val sortNumber = (1000 + index).toString().padStart(4, '0')
-            writeMigrationFile(target, "${sortNumber}_create_${table}_table", sql)
+            writeMigrationFile(target, sortNumber, "create_${table}_table", sql)
         }
 
         val fkList = fkGen.generateAllForeignKeys(entities)
         if (fkList.isNotEmpty()) {
             val sql = "-- Foreign Keys\n" + fkList.joinToString("\n\n")
-            writeMigrationFile(target, "5000_add_foreign_keys", formatPlainSql(sql))
+            writeMigrationFile(target, "5000", "add_foreign_keys", formatPlainSql(sql))
         }
 
         val idxList = idxGen.generateAllIndexes(entities)
         if (idxList.isNotEmpty()) {
             val sql = "-- Indexes\n" + idxList.joinToString("\n\n")
-            writeMigrationFile(target, "9000_add_indexes", formatPlainSql(sql))
+            writeMigrationFile(target, "9000", "add_indexes", formatPlainSql(sql))
         }
     }
 
@@ -606,14 +606,16 @@ class SchemaGenerator(
         return "-- HASH: $hash\n$sql"
     }
 
-    private fun writeMigrationFile(targetDir: File, baseName: String, content: String) {
+    private fun writeMigrationFile(targetDir: File, sortNumber: String, baseName: String, content: String) {
 
         val newHash = hashOf(content)
+
+        val pattern = Regex("""V\d{8}_\d{6}_${sortNumber}__${baseName}\.sql""")
 
         val existingFiles = targetDir
             .listFiles()
             .orEmpty()
-            .filter { it.name.matches(Regex("""V\d{8}_\d{6}__${baseName}\.sql""")) }
+            .filter { it.name.matches(pattern) }
 
         val exactMatch = existingFiles.firstOrNull { file ->
             val first = file.useLines { it.firstOrNull() }
@@ -626,13 +628,15 @@ class SchemaGenerator(
             return
         }
 
-        val newFile = File(targetDir, "V${timestamp()}__${baseName}.sql")
+        val filename = "V${timestamp()}_${sortNumber}__${baseName}.sql"
+        val newFile = File(targetDir, filename)
         newFile.writeText(addHeaderWithHash(content))
         logger.info { "Created: ${newFile.name}" }
     }
 
-    internal fun testWriteFileForTest(dir: File, baseName: String, content: String) {
-        writeMigrationFile(dir, baseName, content)
+
+    internal fun testWriteFileForTest(dir: File, sortNumber: String, baseName: String, content: String) {
+        writeMigrationFile(dir, sortNumber, baseName, content)
     }
 
     internal fun testFindEntities(): List<Class<*>> = entityScanner.findEntities()
