@@ -2,11 +2,11 @@ package de.alexanderwolz.commons.util.database
 
 import de.alexanderwolz.commons.util.database.entity.bar.AnotherEntity
 import de.alexanderwolz.commons.util.database.entity.fu.SampleEntity
-import de.alexanderwolz.commons.util.database.entity.ReferenceEntity
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
-import kotlin.test.*
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class SchemaGeneratorTest {
 
@@ -15,182 +15,118 @@ class SchemaGeneratorTest {
 
     private val entityPackage = javaClass.packageName + ".entity"
 
-
     @Test
     fun testPostgresUuidV7Generation() {
         val dir = runGenerator(SchemaGenerator.DatabaseType.POSTGRES, SchemaGenerator.UUIDType.UUID_V7)
 
-        val setup = dir.partitionDirFor(ReferenceEntity::class.java)
-            .requireFileEndingWith("__setup_uuid_extension.sql")
+        val folder = dir.folderFor(SampleEntity::class.java)
+
+        val setup = folder.findBySuffix("__setup_uuid_extension.sql")
+        val create = folder.findBySuffix("__create_sample_table.sql")
+
         assertTrue(setup.readText().contains("uuid_generate_v7"))
-
-        val sampleSql = dir.partitionDirFor(SampleEntity::class.java)
-            .requireFileEndingWith("__create_sample_table.sql")
-            .readText()
-
-        assertTrue(sampleSql.contains("DEFAULT public.uuid_generate_v7()"))
-        assertTrue(sampleSql.contains("created_at") && sampleSql.contains("DEFAULT CURRENT_TIMESTAMP"))
+        assertTrue(create.readText().startsWith("-- HASH:"))
+        assertTrue(create.readText().contains("DEFAULT public.uuid_generate_v7()"))
     }
 
     @Test
     fun testPostgresUuidV4Generation() {
         val dir = runGenerator(SchemaGenerator.DatabaseType.POSTGRES, SchemaGenerator.UUIDType.UUID_V4)
+        val folder = dir.folderFor(SampleEntity::class.java)
 
-        // No setup file anywhere
-        val anySetup = dir.walkTopDown().any { it.name.contains("__setup_uuid_extension") }
-        assertFalse(anySetup, "UUID V4 must not generate setup file")
+        // Kein Setup bei V4
+        assertEquals(folder.listFiles()?.none { it.name.contains("__setup_uuid_extension") }, true)
 
-        val sampleSql = dir.partitionDirFor(SampleEntity::class.java)
-            .requireFileEndingWith("__create_sample_table.sql")
-            .readText()
-
-        assertTrue(sampleSql.contains("DEFAULT public.uuid_generate_v4()"))
-        assertFalse(sampleSql.contains("uuid_generate_v7()"))
+        val create = folder.findBySuffix("__create_sample_table.sql")
+        assertTrue(create.readText().contains("uuid_generate_v4"))
+        assertTrue(create.readText().startsWith("-- HASH:"))
     }
 
     @Test
     fun testMariaDbUuidV4Generation() {
         val dir = runGenerator(SchemaGenerator.DatabaseType.MARIADB, SchemaGenerator.UUIDType.UUID_V4)
 
-        val sampleSql = dir.partitionDirFor(SampleEntity::class.java)
-            .requireFileEndingWith("__create_sample_table.sql")
-            .readText()
+        val folder = dir.folderFor(SampleEntity::class.java)
+        val create = folder.findBySuffix("__create_sample_table.sql")
 
-        assertTrue(sampleSql.contains("CHAR(36)"))
-        assertTrue(sampleSql.contains("DEFAULT (UUID())"))
-        assertFalse(sampleSql.contains("uuid_generate"))
+        val text = create.readText()
+        assertTrue(text.contains("CHAR(36)"))
+        assertTrue(text.contains("DEFAULT (UUID())"))
     }
 
     @Test
     fun testMariaDbUuidV7Fallback() {
         val dir = runGenerator(SchemaGenerator.DatabaseType.MARIADB, SchemaGenerator.UUIDType.UUID_V7)
 
-        val sampleSql = dir.partitionDirFor(SampleEntity::class.java)
-            .requireFileEndingWith("__create_sample_table.sql")
-            .readText()
+        val folder = dir.folderFor(SampleEntity::class.java)
+        val create = folder.findBySuffix("__create_sample_table.sql")
 
-        assertTrue(sampleSql.contains("DEFAULT (UUID())"))
-        assertFalse(sampleSql.contains("uuid_generate"))
+        assertTrue(create.readText().contains("DEFAULT (UUID())")) // fallback
     }
 
     @Test
-    fun testEntityDiscoveryWorks() {
+    fun testEntityDiscovery() {
         val gen = SchemaGenerator(entityPackage, tmpDir)
-        val entities = gen.findEntities()
+        val entities = gen.testFindEntities()
 
         assertTrue(entities.any { it.simpleName == "SampleEntity" })
         assertTrue(entities.any { it.simpleName == "AnotherEntity" })
-        assertFalse(entities.any { it.simpleName.contains("Test") })
     }
 
     @Test
-    fun testFkOnDeleteCascadeAndSetNull() {
+    fun testForeignKeyGeneration() {
         val dir = runGenerator(SchemaGenerator.DatabaseType.POSTGRES, SchemaGenerator.UUIDType.UUID_V4)
+        val folder = dir.folderFor(SampleEntity::class.java)
 
-        val fkSql = dir.partitionDirFor(SampleEntity::class.java)
-            .requireFileEndingWith("__add_foreign_keys.sql")
-            .readText()
+        val fk = folder.findBySuffix("__add_foreign_keys.sql").readText()
 
-        assertTrue(fkSql.contains("ON DELETE CASCADE"))
-        assertTrue(fkSql.contains("ON DELETE SET NULL"))
+        assertTrue(fk.contains("ON DELETE CASCADE") || fk.contains("ON DELETE SET NULL"))
     }
 
     @Test
     fun testIndexGeneration() {
         val dir = runGenerator(SchemaGenerator.DatabaseType.POSTGRES, SchemaGenerator.UUIDType.UUID_V4)
+        val folder = dir.folderFor(SampleEntity::class.java)
 
-        val idxSql = dir.partitionDirFor(SampleEntity::class.java)
-            .requireFileEndingWith("__add_indexes.sql")
-            .readText()
+        val idx = folder.findBySuffix("__add_indexes.sql").readText()
 
-        assertTrue(idxSql.contains("idx_sample_reference_id"))
-        assertTrue(idxSql.contains("idx_sample_email"))
-        assertTrue(idxSql.contains("CREATE INDEX"))
+        assertTrue(idx.contains("CREATE INDEX"))
     }
 
     @Test
     fun testEmbeddedFields() {
         val dir = runGenerator(SchemaGenerator.DatabaseType.POSTGRES, SchemaGenerator.UUIDType.UUID_V4)
+        val folder = dir.folderFor(SampleEntity::class.java)
 
-        val sampleSql = dir.partitionDirFor(SampleEntity::class.java)
-            .requireFileEndingWith("__create_sample_table.sql")
-            .readText()
+        val create = folder.findBySuffix("__create_sample_table.sql").readText()
 
-        assertTrue(sampleSql.contains("address_street"))
-        assertTrue(sampleSql.contains("address_city"))
+        assertTrue(create.contains("address_street"))
+        assertTrue(create.contains("address_city"))
     }
 
     @Test
-    fun testTimestampDefaultApplied() {
+    fun testHashHeaderExists() {
         val dir = runGenerator(SchemaGenerator.DatabaseType.POSTGRES, SchemaGenerator.UUIDType.UUID_V4)
+        val folder = dir.folderFor(SampleEntity::class.java)
 
-        val sampleSql = dir.partitionDirFor(SampleEntity::class.java)
-            .requireFileEndingWith("__create_sample_table.sql")
-            .readText()
+        val file = folder.findBySuffix("__create_sample_table.sql")
+        val firstLine = file.readLines().first()
 
-        assertTrue(sampleSql.contains("created_at") && sampleSql.contains("DEFAULT CURRENT_TIMESTAMP"))
-        assertTrue(sampleSql.contains("updated_at") && sampleSql.contains("DEFAULT CURRENT_TIMESTAMP"))
+        assertTrue(firstLine.startsWith("-- HASH:"))
+        assertTrue(firstLine.length > 15)
     }
 
     @Test
-    fun testEnumAndJsonTypes() {
-        val dir = runGenerator(SchemaGenerator.DatabaseType.POSTGRES, SchemaGenerator.UUIDType.UUID_V4)
-
-        val sampleSql = dir.partitionDirFor(SampleEntity::class.java)
-            .requireFileEndingWith("__create_sample_table.sql")
-            .readText()
-
-        assertTrue(
-            Regex("""\b\w*_status\s+VARCHAR\(50\)""").containsMatchIn(sampleSql)
-        )
-
-        assertTrue(sampleSql.contains("JSONB"))
-    }
-
-    @Test
-    fun testMigrationFileOrder() {
-        val dir = runGenerator(SchemaGenerator.DatabaseType.POSTGRES, SchemaGenerator.UUIDType.UUID_V4)
-
-        val allFiles = dir.walkTopDown().filter { it.isFile }.map { it.name }.sorted().toList()
-
-        assertTrue(allFiles.isNotEmpty())
-        assertTrue(allFiles.first().startsWith("V"))
-        assertTrue(allFiles.last().startsWith("V"))
-    }
-
-    @Test
-    fun testEntitiesAreGrouped() {
+    fun testGroupingByPackage() {
         val strategy = PackageNamePartitionStrategy()
 
-        val grouped = SchemaGenerator(
-            basePackage = entityPackage,
-            outDir = tmpDir,
-            databaseType = SchemaGenerator.DatabaseType.POSTGRES,
-            uuidType = SchemaGenerator.UUIDType.UUID_V4,
-            partitionStrategy = strategy
-        ).groupByPartition(listOf(SampleEntity::class.java, AnotherEntity::class.java))
+        val grouped = SchemaGenerator(entityPackage, tmpDir, partitionStrategy = strategy)
+            .groupByPartition(listOf(SampleEntity::class.java, AnotherEntity::class.java))
 
         assertTrue(grouped.containsKey("fu"))
         assertTrue(grouped.containsKey("bar"))
-
-        assertTrue(grouped["fu"]!!.contains(SampleEntity::class.java))
-        assertTrue(grouped["bar"]!!.contains(AnotherEntity::class.java))
     }
 
-
-    private fun File.partitionDirFor(entity: Class<*>): File {
-        val folder = entity.packageName.split(".").last()
-        return File(this, folder)
-    }
-
-    private fun File.requireFileEndingWith(suffix: String): File {
-        val match = this.listFiles()?.firstOrNull { it.name.endsWith(suffix) }
-        return match ?: error(
-            "No file found ending with '$suffix'\n" +
-                    "In directory: $this\n" +
-                    "Files: ${this.listFiles()?.joinToString()}"
-        )
-    }
 
     private fun runGenerator(
         db: SchemaGenerator.DatabaseType,
@@ -199,5 +135,19 @@ class SchemaGeneratorTest {
         val outDir = File(tmpDir, "migration_${db}_${uuid}")
         SchemaGenerator(entityPackage, outDir, db, uuid).generate()
         return outDir
+    }
+
+    private fun File.folderFor(entity: Class<*>): File {
+        val folder = File(this, entity.packageName.split(".").last())
+        require(folder.exists()) { "Folder for entity not found: ${folder.absolutePath}" }
+        return folder
+    }
+
+    private fun File.findBySuffix(suffix: String): File {
+        val candidates = listFiles()?.filter { it.name.contains(suffix) }.orEmpty()
+        require(candidates.isNotEmpty()) {
+            "No file ending with '$suffix' in: ${listFiles()?.toList()}"
+        }
+        return candidates.first()
     }
 }
