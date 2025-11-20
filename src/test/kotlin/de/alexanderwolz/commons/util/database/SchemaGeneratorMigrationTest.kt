@@ -366,7 +366,7 @@ class SchemaGeneratorMigrationTest {
         smartGen2.generate()
 
         val filesAfterChange = dir.walkTopDown().filter { it.extension == "sql" }.toList()
-        
+
         val alterFiles = filesAfterChange.filter { it.name.contains("alter") }
 
         println("After simulated change: ${filesAfterChange.size} files (${alterFiles.size} ALTER files)")

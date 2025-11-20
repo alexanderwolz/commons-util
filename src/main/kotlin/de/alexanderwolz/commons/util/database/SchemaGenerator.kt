@@ -17,7 +17,7 @@ class SchemaGenerator(
     private val uuidType: UUIDType = UUIDType.UUID_V7,
     private val provider: SchemaProvider = DefaultSchemaProvider(),
     private val clearTargetFolders: Boolean = false,
-    private val migrationMode: MigrationMode = MigrationMode.SMART
+    private val migrationMode: MigrationMode = MigrationMode.CREATE_ONLY
 ) {
 
     private val logger = Logger(javaClass)

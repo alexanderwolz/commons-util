@@ -21,14 +21,14 @@ You can pull the latest binaries from the central Maven repositories:
 
 with Gradle
 ```kotlin
-implementation("de.alexanderwolz:commons-util:1.5.10")
+implementation("de.alexanderwolz:commons-util:1.6.0")
 ```
 with Maven
 ```xml
 <dependency>
   <groupId>de.alexanderwolz</groupId>
   <artifactId>commons-util</artifactId>
-  <version>1.5.10</version>
+  <version>1.6.0</version>
 </dependency>
 ```
 
