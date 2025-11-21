@@ -1,4 +1,4 @@
-package de.alexanderwolz.commons.util.database
+package de.alexanderwolz.commons.util.database.migration.schema
 
 data class ColumnDef(
     val name: String,

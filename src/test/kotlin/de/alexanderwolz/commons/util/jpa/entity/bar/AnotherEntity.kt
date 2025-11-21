@@ -1,4 +1,4 @@
-package de.alexanderwolz.commons.util.database.entity.bar
+package de.alexanderwolz.commons.util.jpa.entity.bar
 
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
