@@ -63,15 +63,20 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
     }
 
     private fun findLatestCreateTableFile(schemaDir: File, tableName: String): File? {
+        val createRegex = Regex(
+            """CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?$tableName\s*\(""",
+            RegexOption.IGNORE_CASE
+        )
+
         return schemaDir.listFiles()
             ?.filter { it.isFile && it.extension == "sql" }
             ?.filter { file ->
                 val content = file.readText()
-                content.contains("CREATE TABLE", ignoreCase = true) &&
-                        content.contains(tableName, ignoreCase = true)
+                createRegex.containsMatchIn(content)
             }
             ?.maxByOrNull { it.name }
     }
+
 
     private fun extractTableNameFromFile(file: File): String? {
         val content = file.readText()
@@ -117,33 +122,44 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
         val pkCols = pkRegex.find(createTableSql)?.groupValues?.get(1)
             ?.split(",")?.map { it.trim() }?.toSet() ?: emptySet()
 
-        val updatedColumns = columns.map { col ->
-            if (col.name in pkCols) {
-                col.copy(
-                    isPrimaryKey = true,
-                    nullable = false
-                )
-            } else col
-        }
+        val updatedColumns =
+            if (pkCols.size > 1)
+                columns // do NOT mark individually
+            else
+                columns.map { col ->
+                    if (col.name in pkCols) {
+                        col.copy(
+                            isPrimaryKey = true,
+                            nullable = false
+                        )
+                    } else col
+                }
 
-        return updatedColumns
+        return updatedColumns.sortedBy { it.name }
     }
 
     private fun parseColumnLine(line: String): ColumnSchema? {
         val clean = line.trimEnd(',').trim()
         if (clean.isEmpty()) return null
 
-        val parts = clean.split(Regex("\\s+"), limit = 3)
-        if (parts.size < 2) return null
+        // Tokenisiere NUR Namen + Typ, danach kompletten Rest übernehmen
+        val tokens = clean.split(Regex("\\s+"))
+        if (tokens.size < 2) return null
 
-        val columnName = parts[0]
-        val columnType = parts[1]
-        val rest = parts.getOrNull(2) ?: ""
+        val columnName = tokens[0]
+        val columnType = tokens[1]
+
+        // alles nach dem Typ ist "rest"
+        val rest = clean.substringAfter(columnType).trim()
 
         val isPrimaryKey = rest.contains("PRIMARY KEY", ignoreCase = true)
         val nullable = if (isPrimaryKey) false else !rest.contains("NOT NULL", ignoreCase = true)
         val unique = rest.contains("UNIQUE", ignoreCase = true)
-        val default = extractDefaultValue(rest)
+
+        val default =
+            if (clean.contains("DEFAULT", ignoreCase = true))
+                extractDefaultValue(clean)
+            else null
 
         return ColumnSchema(
             name = columnName,
@@ -155,10 +171,85 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
         )
     }
 
+
     private fun extractDefaultValue(text: String): String? {
-        val regex = """DEFAULT\s+(.+?)(?:\s*,|\s*$)""".toRegex(RegexOption.IGNORE_CASE)
-        return regex.find(text)?.groupValues?.get(1)?.trim()
+        val idx = text.indexOf("DEFAULT", ignoreCase = true)
+        if (idx < 0) return null
+
+        var i = idx + 7
+        val n = text.length
+
+        while (i < n && text[i].isWhitespace()) i++
+        if (i >= n) return null
+
+        // STRING DEFAULT 'xyz'
+        if (text[i] == '\'') {
+            val start = i
+            i++
+            while (i < n) {
+                if (text[i] == '\'' && text[i - 1] != '\\') {
+                    return text.substring(start, i + 1)
+                }
+                i++
+            }
+            return text.substring(start)
+        }
+
+        // NUMBER DEFAULT 0.00 or -1
+        if (text[i].isDigit() || (text[i] == '-' && i + 1 < n && text[i + 1].isDigit())) {
+            val start = i
+            while (i < n && (text[i].isDigit() || text[i] == '.')) i++
+            return text.substring(start, i)
+        }
+
+        // IDENTIFIER or FUNCTION
+        if (text[i].isLetter()) {
+            val start = i
+
+            // read identifier
+            while (i < n && (text[i].isLetterOrDigit() || text[i] == '_' || text[i] == '.')) i++
+
+            // FUNCTION: xyz(...)
+            if (i < n && text[i] == '(') {
+                var depth = 1
+                i++ // skip '('
+
+                while (i < n && depth > 0) {
+                    when (text[i]) {
+                        '(' -> depth++
+                        ')' -> depth--
+                    }
+                    i++
+                }
+
+                return text.substring(start, i).trim()
+            }
+
+            // SIMPLE LITERAL
+            val end = text.indexOfAny(charArrayOf(',', ' ', ')'), i).let { if (it == -1) n else it }
+            return text.substring(start, end)
+        }
+
+        // PARENTHESIZED DEFAULT (xyz)
+        if (text[i] == '(') {
+            val start = i
+            var depth = 1
+            i++
+
+            while (i < n && depth > 0) {
+                when (text[i]) {
+                    '(' -> depth++
+                    ')' -> depth--
+                }
+                i++
+            }
+
+            return text.substring(start, i)
+        }
+
+        return null
     }
+
 
     private fun parseIndexes(schemaDir: File, tableName: String): List<IndexSchema> {
         val indexes = mutableListOf<IndexSchema>()
@@ -170,7 +261,7 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
                 indexes.addAll(parseIndexStatementsFromContent(content, tableName))
             }
 
-        return indexes
+        return indexes.distinctBy { it.name }
     }
 
     private fun parseIndexStatementsFromContent(content: String, tableName: String): List<IndexSchema> {

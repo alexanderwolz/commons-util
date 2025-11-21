@@ -3,11 +3,7 @@ package de.alexanderwolz.commons.util.database
 import de.alexanderwolz.commons.log.Logger
 import de.alexanderwolz.commons.util.database.migration.MigrationGenerator
 import de.alexanderwolz.commons.util.database.migration.SqlFileSchemaExtractor
-import de.alexanderwolz.commons.util.database.migration.schema.ColumnDef
-import de.alexanderwolz.commons.util.database.migration.schema.ColumnSchema
-import de.alexanderwolz.commons.util.database.migration.schema.ForeignKeySchema
-import de.alexanderwolz.commons.util.database.migration.schema.IndexSchema
-import de.alexanderwolz.commons.util.database.migration.schema.TableSchema
+import de.alexanderwolz.commons.util.database.migration.schema.*
 import de.alexanderwolz.commons.util.database.provider.DefaultSchemaProvider
 import de.alexanderwolz.commons.util.database.provider.SchemaProvider
 import de.alexanderwolz.commons.util.jpa.EntityScanner
@@ -205,12 +201,27 @@ class SchemaGenerator(
                     else -> sqlType(f, colAnn)
                 }
 
+                // FIX: Include the defaultValue for UUID generation to match generated SQL
+                val defaultValue = when (gen?.strategy) {
+                    GenerationType.UUID -> when (databaseType) {
+                        DatabaseType.POSTGRES -> when (uuidType) {
+                            UUIDType.UUID_V7 -> "public.uuid_generate_v7()"
+                            UUIDType.UUID_V4 -> "public.uuid_generate_v4()"
+                        }
+
+                        DatabaseType.MARIADB -> "(UUID())"
+                    }
+
+                    else -> null
+                }
+
                 columns.add(
                     ColumnSchema(
                         name = colName,
                         type = type,
                         nullable = false,
-                        isPrimaryKey = true
+                        isPrimaryKey = true,
+                        defaultValue = defaultValue  // FIX: Added to match generated SQL
                     )
                 )
                 return@forEach
@@ -245,12 +256,46 @@ class SchemaGenerator(
                 return@forEach
             }
 
+            // ---------- EMBEDDED ----------
+            if (f.findAnnotationOnFieldOrGetter<Embedded>(entity) != null) {
+                val embType = f.type
+                val prefix = toSnakeCase(f.name) + "_"
+
+                if (embType.isAnnotationPresent(Embeddable::class.java)) {
+                    embType.declaredFields
+                        .filter { !it.isSynthetic && !Modifier.isStatic(it.modifiers) }
+                        .forEach { ef ->
+
+                            val subColAnn = ef.getAnnotation(Column::class.java)
+                            val subName = subColAnn?.name?.ifBlank { null }
+                                ?: (prefix + toSnakeCase(ef.name))
+
+                            val type = sqlType(ef, subColAnn)
+                            val nullable = subColAnn?.nullable ?: true
+                            val unique = subColAnn?.unique ?: false
+
+                            columns.add(
+                                ColumnSchema(
+                                    name = subName,
+                                    type = type,
+                                    nullable = nullable,
+                                    unique = unique
+                                )
+                            )
+                        }
+                }
+
+                return@forEach
+            }
+
+
             // ---------- NORMAL COLUMNS ----------
             val colName = colAnn?.name?.ifBlank { null } ?: toSnakeCase(f.name)
             val nullable = colAnn?.nullable ?: true
             val unique = colAnn?.unique ?: false
             val type = sqlType(f, colAnn)
-            val defaultValue = extractDefaultValue(colAnn)
+            // FIX: Include both explicit defaults AND implicit timestamp defaults
+            val defaultValue = extractDefaultValue(colAnn) ?: timestampDefault(colName)
 
             columns.add(
                 ColumnSchema(
@@ -636,7 +681,8 @@ class SchemaGenerator(
         )
 
         val newFile = File(targetDir, filename)
-        newFile.writeText(addHeaderWithHash(content))
+        val content = addHeaderWithHash(content)
+        newFile.writeText(content)
         logger.info { "Created: ${newFile.name} -> ($newFile)" }
     }
 
