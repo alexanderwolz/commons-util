@@ -1,4 +1,4 @@
-package de.alexanderwolz.commons.util.database.entity
+package de.alexanderwolz.commons.util.jpa.entity
 
 import jakarta.persistence.*
 

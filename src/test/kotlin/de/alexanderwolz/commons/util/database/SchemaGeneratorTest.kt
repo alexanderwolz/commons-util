@@ -1,9 +1,9 @@
 package de.alexanderwolz.commons.util.database
 
-import de.alexanderwolz.commons.util.database.entity.bar.AnotherEntity
-import de.alexanderwolz.commons.util.database.entity.fu.SampleEntity
+import de.alexanderwolz.commons.util.jpa.entity.bar.AnotherEntity
+import de.alexanderwolz.commons.util.jpa.entity.fu.SampleEntity
 import de.alexanderwolz.commons.util.database.provider.DefaultSchemaProvider
-import de.alexanderwolz.commons.util.database.provider.SchemaProvider
+import de.alexanderwolz.commons.util.jpa.EntityScannerTest
 import jakarta.persistence.Table
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -16,7 +16,7 @@ class SchemaGeneratorTest {
     @TempDir
     private lateinit var tmpDir: File
 
-    private val entityPackage = javaClass.packageName + ".entity"
+    private val entityPackage = EntityScannerTest::class.java.packageName + ".entity"
 
     @Test
     fun testPostgresUuidV7Generation() {
@@ -146,16 +146,18 @@ class SchemaGeneratorTest {
     }
 
     private fun File.folderFor(entity: Class<*>): File {
-        val table = entity.annotations.find { it.annotationClass == Table::class } as? Table
-        this.listFiles { it.name.contains(table?.name ?: entity.simpleName.lowercase()) }?.firstOrNull()?.let {
-            return this
-        }
+        val table = entity.annotations
+            .find { it.annotationClass == Table::class }
+            .let { it as? Table }
+            ?.name
+            ?: entity.simpleName.lowercase()
 
-        val lastPart = entity.packageName.split(".").last()
-        val folder = File(this, lastPart)
+        val sql = this.walkTopDown()
+            .filter { it.isFile && it.extension == "sql" }
+            .firstOrNull { it.name.contains(table) }
+            ?: error("No SQL file found for entity ${entity.simpleName} in $this")
 
-        require(folder.exists()) { "Folder for entity not found: ${folder.absolutePath}" }
-        return folder
+        return sql.parentFile
     }
 
     fun File.findBySuffix(suffix: String): File {

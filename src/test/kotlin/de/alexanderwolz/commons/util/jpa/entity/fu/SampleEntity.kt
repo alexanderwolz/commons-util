@@ -1,10 +1,10 @@
-package de.alexanderwolz.commons.util.database.entity.fu
+package de.alexanderwolz.commons.util.jpa.entity.fu
 
 import com.fasterxml.jackson.databind.JsonNode
-import de.alexanderwolz.commons.util.database.entity.Address
-import de.alexanderwolz.commons.util.database.entity.ReferenceEntity
-import de.alexanderwolz.commons.util.database.entity.SampleStatus
-import de.alexanderwolz.commons.util.database.entity.Settings
+import de.alexanderwolz.commons.util.jpa.entity.Address
+import de.alexanderwolz.commons.util.jpa.entity.ReferenceEntity
+import de.alexanderwolz.commons.util.jpa.entity.SampleStatus
+import de.alexanderwolz.commons.util.jpa.entity.Settings
 import jakarta.persistence.Column
 import jakarta.persistence.Embedded
 import jakarta.persistence.Entity
