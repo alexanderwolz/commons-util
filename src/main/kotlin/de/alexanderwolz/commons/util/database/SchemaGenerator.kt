@@ -1,8 +1,13 @@
 package de.alexanderwolz.commons.util.database
 
 import de.alexanderwolz.commons.log.Logger
+import de.alexanderwolz.commons.util.database.migration.MigrationGenerator
 import de.alexanderwolz.commons.util.database.provider.DefaultSchemaProvider
 import de.alexanderwolz.commons.util.database.provider.SchemaProvider
+import de.alexanderwolz.commons.util.database.migration.schema.ColumnSchema
+import de.alexanderwolz.commons.util.database.migration.schema.ForeignKeySchema
+import de.alexanderwolz.commons.util.database.migration.schema.IndexSchema
+import de.alexanderwolz.commons.util.database.migration.schema.TableSchema
 import jakarta.persistence.*
 import java.io.File
 import java.lang.reflect.Field

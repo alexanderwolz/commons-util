@@ -1,4 +1,9 @@
-package de.alexanderwolz.commons.util.database
+package de.alexanderwolz.commons.util.database.migration
+
+import de.alexanderwolz.commons.util.database.migration.schema.ColumnSchema
+import de.alexanderwolz.commons.util.database.migration.schema.ForeignKeySchema
+import de.alexanderwolz.commons.util.database.migration.schema.IndexSchema
+import de.alexanderwolz.commons.util.database.migration.schema.TableSchema
 
 class MigrationGenerator {
 

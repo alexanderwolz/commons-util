@@ -1,10 +1,11 @@
 package de.alexanderwolz.commons.util.database
 
+import de.alexanderwolz.commons.util.database.migration.schema.TableSchema
 import java.io.File
 
 class SchemaStateTracker(baseDir: File) {
 
-    private val stateDir = File(baseDir, ".schema-state")
+    private val stateDir = File(baseDir, ".metadata")
 
     init {
         stateDir.mkdirs()

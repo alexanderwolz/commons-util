@@ -1,6 +1,10 @@
 package de.alexanderwolz.commons.util.database
 
 import de.alexanderwolz.commons.util.database.entity.fu.SampleEntity
+import de.alexanderwolz.commons.util.database.migration.schema.ColumnSchema
+import de.alexanderwolz.commons.util.database.migration.schema.ForeignKeySchema
+import de.alexanderwolz.commons.util.database.migration.schema.IndexSchema
+import de.alexanderwolz.commons.util.database.migration.schema.TableSchema
 import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -337,7 +341,7 @@ class SchemaGeneratorMigrationTest {
         )
 
         // Phase 3: Simuliere eine Schema-Änderung durch manuelles Editieren der State-Datei
-        val stateDir = File(dir, ".schema-state")
+        val stateDir = File(dir, ".metadata")
         val stateFile = stateDir.walkTopDown()
             .filter { it.extension == "json" }
             .firstOrNull()
@@ -525,7 +529,7 @@ class SchemaGeneratorMigrationTest {
         val gen = newGenerator(outDir = dir)
         gen.generate()
 
-        val stateDir = File(dir, ".schema-state")
+        val stateDir = File(dir, ".metadata")
         assertTrue(stateDir.exists(), ".schema-state directory should exist")
 
         val stateFiles = stateDir.walkTopDown()
@@ -560,7 +564,7 @@ class SchemaGeneratorMigrationTest {
 
         gen1.generate()
 
-        val stateDir = File(dir, ".schema-state")  // Mit Bindestrich!
+        val stateDir = File(dir, ".metadata")
         val schemaStateFiles = stateDir.walkTopDown()
             .filter { it.name.endsWith(".json") }
             .toList()
@@ -600,7 +604,7 @@ class SchemaGeneratorMigrationTest {
         tracker.saveTableSchema("public", "test_table", schema)
 
         // Prüfe ob Datei existiert
-        val stateFile = File(dir, ".schema-state/public/test_table.json")
+        val stateFile = File(dir, ".metadata/public/test_table.json")
         assertTrue(stateFile.exists(), "State file should exist")
 
         println("=== State file content ===")

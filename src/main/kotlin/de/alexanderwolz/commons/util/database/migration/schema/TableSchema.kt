@@ -1,4 +1,4 @@
-package de.alexanderwolz.commons.util.database
+package de.alexanderwolz.commons.util.database.migration.schema
 
 import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
