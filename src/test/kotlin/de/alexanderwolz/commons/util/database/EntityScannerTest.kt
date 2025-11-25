@@ -1,9 +1,9 @@
-package de.alexanderwolz.commons.util.jpa
+package de.alexanderwolz.commons.util.database
 
-import de.alexanderwolz.commons.util.jpa.entity.NonEntity
-import de.alexanderwolz.commons.util.jpa.entity.ReferenceEntity
-import de.alexanderwolz.commons.util.jpa.entity.bar.AnotherEntity
-import de.alexanderwolz.commons.util.jpa.entity.fu.SampleEntity
+import de.alexanderwolz.commons.util.database.entity.NonEntity
+import de.alexanderwolz.commons.util.database.entity.ReferenceEntity
+import de.alexanderwolz.commons.util.database.entity.bar.AnotherEntity
+import de.alexanderwolz.commons.util.database.entity.fu.SampleEntity
 import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
 
