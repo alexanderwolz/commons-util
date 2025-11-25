@@ -1,9 +1,9 @@
 package de.alexanderwolz.commons.util.database
 
-import de.alexanderwolz.commons.util.jpa.entity.bar.AnotherEntity
-import de.alexanderwolz.commons.util.jpa.entity.fu.SampleEntity
+import de.alexanderwolz.commons.util.database.entity.bar.AnotherEntity
+import de.alexanderwolz.commons.util.database.entity.fu.SampleEntity
+import de.alexanderwolz.commons.util.database.migration.DatabaseMigrationUtils
 import de.alexanderwolz.commons.util.database.provider.DefaultSchemaProvider
-import de.alexanderwolz.commons.util.jpa.EntityScannerTest
 import jakarta.persistence.Table
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -126,11 +126,10 @@ class SchemaGeneratorTest {
             override fun getSetupFolder(root: File): String = "setup"
         }
 
-        val grouped = SchemaGenerator(
-            entityPackage,
-            tmpDir,
-            provider = strategy
-        ).groupByPartition(listOf(SampleEntity::class.java, AnotherEntity::class.java))
+        val grouped = DatabaseMigrationUtils.groupByPartition(
+            listOf(SampleEntity::class.java, AnotherEntity::class.java),
+            strategy, tmpDir
+        )
 
         assertTrue(grouped.containsKey("fu"))
         assertTrue(grouped.containsKey("bar"))

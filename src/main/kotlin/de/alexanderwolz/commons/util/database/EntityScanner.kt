@@ -1,4 +1,4 @@
-package de.alexanderwolz.commons.util.jpa
+package de.alexanderwolz.commons.util.database
 
 import de.alexanderwolz.commons.log.Logger
 import jakarta.persistence.Entity

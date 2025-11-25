@@ -12,16 +12,12 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
     private val logger = Logger(javaClass)
 
     fun getExistingTables(schemaFolder: String? = null): Set<String> {
-        val dir = schemaFolder?.takeIf { it.isNotBlank() }
-            ?.let { File(baseDir, it.lowercase()) }
-            ?: baseDir
+        val dir = schemaFolder?.takeIf { it.isNotBlank() }?.let { File(baseDir, it.lowercase()) } ?: baseDir
 
         if (!dir.exists()) return emptySet()
 
-        return dir.walkTopDown()
-            .filter { it.isFile && it.extension == "sql" }
-            .flatMap { extractTablesFromFile(it).asSequence() }
-            .toSet()
+        return dir.walkTopDown().filter { it.isFile && it.extension == "sql" }
+            .flatMap { extractTablesFromFile(it).asSequence() }.toSet()
     }
 
     private fun extractTablesFromFile(file: File): List<String> {
@@ -29,16 +25,13 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
 
         val results = mutableSetOf<String>()
 
-        Regex("""CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)""", RegexOption.IGNORE_CASE)
-            .findAll(content)
+        Regex("""CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)""", RegexOption.IGNORE_CASE).findAll(content)
             .forEach { results.add(it.groupValues[1]) }
 
-        Regex("""ALTER\s+TABLE\s+(\w+)""", RegexOption.IGNORE_CASE)
-            .findAll(content)
+        Regex("""ALTER\s+TABLE\s+(\w+)""", RegexOption.IGNORE_CASE).findAll(content)
             .forEach { results.add(it.groupValues[1]) }
 
-        Regex("""CREATE\s+(?:UNIQUE\s+)?INDEX\s+\w+\s+ON\s+(\w+)""", RegexOption.IGNORE_CASE)
-            .findAll(content)
+        Regex("""CREATE\s+(?:UNIQUE\s+)?INDEX\s+\w+\s+ON\s+(\w+)""", RegexOption.IGNORE_CASE).findAll(content)
             .forEach { results.add(it.groupValues[1]) }
 
         return results.toList()
@@ -64,24 +57,13 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
 
     private fun findLatestCreateTableFile(schemaDir: File, tableName: String): File? {
         val createRegex = Regex(
-            """CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?$tableName\s*\(""",
-            RegexOption.IGNORE_CASE
+            """CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?$tableName\s*\(""", RegexOption.IGNORE_CASE
         )
 
-        return schemaDir.listFiles()
-            ?.filter { it.isFile && it.extension == "sql" }
-            ?.filter { file ->
-                val content = file.readText()
-                createRegex.containsMatchIn(content)
-            }
-            ?.maxByOrNull { it.name }
-    }
-
-
-    private fun extractTableNameFromFile(file: File): String? {
-        val content = file.readText()
-        val regex = """CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)""".toRegex(RegexOption.IGNORE_CASE)
-        return regex.find(content)?.groupValues?.get(1)
+        return schemaDir.listFiles()?.filter { it.isFile && it.extension == "sql" }?.filter { file ->
+            val content = file.readText()
+            createRegex.containsMatchIn(content)
+        }?.maxByOrNull { it.name }
     }
 
     private fun parseTableSchema(file: File, tableName: String): TableSchema {
@@ -92,9 +74,7 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
         val foreignKeys = parseForeignKeys(file.parentFile, tableName)
 
         return TableSchema(
-            columns = columns,
-            indexes = indexes,
-            foreignKeys = foreignKeys
+            columns = columns, indexes = indexes, foreignKeys = foreignKeys
         )
     }
 
@@ -106,9 +86,7 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
         )
         val tableContent = tableContentRegex.find(createTableSql)?.groupValues?.get(1) ?: return columns
 
-        val lines = tableContent.lines()
-            .map { it.trim() }
-            .filter { it.isNotEmpty() && !it.startsWith("--") }
+        val lines = tableContent.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("--") }
 
         for (line in lines) {
             if (line.startsWith("PRIMARY KEY", ignoreCase = true)) continue
@@ -119,21 +97,17 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
         }
 
         val pkRegex = """PRIMARY\s+KEY\s*\(([^)]+)\)""".toRegex(RegexOption.IGNORE_CASE)
-        val pkCols = pkRegex.find(createTableSql)?.groupValues?.get(1)
-            ?.split(",")?.map { it.trim() }?.toSet() ?: emptySet()
+        val pkCols =
+            pkRegex.find(createTableSql)?.groupValues?.get(1)?.split(",")?.map { it.trim() }?.toSet() ?: emptySet()
 
-        val updatedColumns =
-            if (pkCols.size > 1)
-                columns // do NOT mark individually
-            else
-                columns.map { col ->
-                    if (col.name in pkCols) {
-                        col.copy(
-                            isPrimaryKey = true,
-                            nullable = false
-                        )
-                    } else col
-                }
+        val updatedColumns = if (pkCols.size > 1) columns // do NOT mark individually
+        else columns.map { col ->
+            if (col.name in pkCols) {
+                col.copy(
+                    isPrimaryKey = true, nullable = false
+                )
+            } else col
+        }
 
         return updatedColumns.sortedBy { it.name }
     }
@@ -156,10 +130,8 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
         val nullable = if (isPrimaryKey) false else !rest.contains("NOT NULL", ignoreCase = true)
         val unique = rest.contains("UNIQUE", ignoreCase = true)
 
-        val default =
-            if (clean.contains("DEFAULT", ignoreCase = true))
-                extractDefaultValue(clean)
-            else null
+        val default = if (clean.contains("DEFAULT", ignoreCase = true)) extractDefaultValue(clean)
+        else null
 
         return ColumnSchema(
             name = columnName,
@@ -170,7 +142,6 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
             defaultValue = default
         )
     }
-
 
     private fun extractDefaultValue(text: String): String? {
         val idx = text.indexOf("DEFAULT", ignoreCase = true)
@@ -254,12 +225,10 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
     private fun parseIndexes(schemaDir: File, tableName: String): List<IndexSchema> {
         val indexes = mutableListOf<IndexSchema>()
 
-        schemaDir.listFiles()
-            ?.filter { it.isFile && it.extension == "sql" }
-            ?.forEach { file ->
-                val content = file.readText()
-                indexes.addAll(parseIndexStatementsFromContent(content, tableName))
-            }
+        schemaDir.listFiles()?.filter { it.isFile && it.extension == "sql" }?.forEach { file ->
+            val content = file.readText()
+            indexes.addAll(parseIndexStatementsFromContent(content, tableName))
+        }
 
         return indexes.distinctBy { it.name }
     }
@@ -274,15 +243,11 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
         indexRegex.findAll(content).forEach { match ->
             val unique = match.groupValues[1].isNotBlank()
             val indexName = match.groupValues[2]
-            val columnList = match.groupValues[3]
-                .split(",")
-                .map { it.trim() }
+            val columnList = match.groupValues[3].split(",").map { it.trim() }
 
             indexes.add(
                 IndexSchema(
-                    name = indexName,
-                    columns = columnList,
-                    unique = unique
+                    name = indexName, columns = columnList, unique = unique
                 )
             )
         }
@@ -293,12 +258,10 @@ class SqlFileSchemaExtractor(private val baseDir: File) {
     private fun parseForeignKeys(schemaDir: File, tableName: String): List<ForeignKeySchema> {
         val foreignKeys = mutableListOf<ForeignKeySchema>()
 
-        schemaDir.listFiles()
-            ?.filter { it.isFile && it.extension == "sql" }
-            ?.forEach { file ->
-                val content = file.readText()
-                foreignKeys.addAll(parseForeignKeyStatementsFromContent(content, tableName))
-            }
+        schemaDir.listFiles()?.filter { it.isFile && it.extension == "sql" }?.forEach { file ->
+            val content = file.readText()
+            foreignKeys.addAll(parseForeignKeyStatementsFromContent(content, tableName))
+        }
 
         return foreignKeys
     }

@@ -8,10 +8,7 @@ import de.alexanderwolz.commons.util.database.migration.schema.TableSchema
 class MigrationGenerator {
 
     fun compareSchemasAndGenerateMigration(
-        tableName: String,
-        entityClass: Class<*>,
-        oldSchema: TableSchema,
-        newSchema: TableSchema
+        tableName: String, entityClass: Class<*>, oldSchema: TableSchema, newSchema: TableSchema
     ): String {
         val normalizedOld = normalizeSchema(oldSchema)
         val normalizedNew = normalizeSchema(newSchema)
@@ -47,8 +44,7 @@ class MigrationGenerator {
     }
 
     private fun normalizeSchema(schema: TableSchema): TableSchema {
-        fun normalizeType(type: String): String =
-            type.trim().replace(Regex("\\s+"), " ").uppercase()
+        fun normalizeType(type: String): String = type.trim().replace(Regex("\\s+"), " ").uppercase()
 
         fun normalizeDefault(default: String?): String? {
             val trimmed = default?.trim() ?: return null
@@ -56,48 +52,33 @@ class MigrationGenerator {
             return trimmed
         }
 
-        fun normalizeColumn(c: ColumnSchema): ColumnSchema =
-            c.copy(
-                name = c.name.trim(),
-                type = normalizeType(c.type),
-                defaultValue = normalizeDefault(c.defaultValue)
-            )
+        fun normalizeColumn(c: ColumnSchema): ColumnSchema = c.copy(
+            name = c.name.trim(), type = normalizeType(c.type), defaultValue = normalizeDefault(c.defaultValue)
+        )
 
-        fun normalizeIndex(i: IndexSchema): IndexSchema =
-            i.copy(
-                name = i.name.trim(),
-                columns = i.columns.map { it.trim() }
-            )
+        fun normalizeIndex(i: IndexSchema): IndexSchema = i.copy(
+            name = i.name.trim(), columns = i.columns.map { it.trim() })
 
-        fun normalizeFk(f: ForeignKeySchema): ForeignKeySchema =
-            f.copy(
-                columnName = f.columnName.trim(),
-                referencedTable = f.referencedTable.trim(),
-                referencedColumn = f.referencedColumn.trim(),
-                onDelete = f.onDelete.trim().replace(Regex("\\s+"), " ").uppercase()
-            )
+        fun normalizeFk(f: ForeignKeySchema): ForeignKeySchema = f.copy(
+            columnName = f.columnName.trim(),
+            referencedTable = f.referencedTable.trim(),
+            referencedColumn = f.referencedColumn.trim(),
+            onDelete = f.onDelete.trim().replace(Regex("\\s+"), " ").uppercase()
+        )
 
         val cols = schema.columns.map(::normalizeColumn).sortedBy { it.name }
-        val idxs = schema.indexes
-            .map(::normalizeIndex)
-            .sortedWith(
-                compareBy<IndexSchema> { it.columns.size }
-                    .thenBy { it.columns.joinToString(",") }
-                    .thenBy { it.name }
-            )
+        val idxs = schema.indexes.map(::normalizeIndex)
+            .sortedWith(compareBy<IndexSchema> { it.columns.size }.thenBy { it.columns.joinToString(",") }
+                .thenBy { it.name })
         val fks = schema.foreignKeys.map(::normalizeFk).sortedBy { it.columnName }
 
         return TableSchema(
-            columns = cols,
-            indexes = idxs,
-            foreignKeys = fks
+            columns = cols, indexes = idxs, foreignKeys = fks
         )
     }
 
     private fun compareColumns(
-        tableName: String,
-        oldCols: List<ColumnSchema>,
-        newCols: List<ColumnSchema>
+        tableName: String, oldCols: List<ColumnSchema>, newCols: List<ColumnSchema>
     ): List<String> {
         val changes = mutableListOf<String>()
         val oldMap = oldCols.associateBy { it.name }
@@ -146,9 +127,7 @@ class MigrationGenerator {
     }
 
     private fun compareIndexes(
-        tableName: String,
-        oldIndexes: List<IndexSchema>,
-        newIndexes: List<IndexSchema>
+        tableName: String, oldIndexes: List<IndexSchema>, newIndexes: List<IndexSchema>
     ): List<String> {
         val changes = mutableListOf<String>()
         val oldMap = oldIndexes.associateBy { it.columns.sorted() }
@@ -173,9 +152,7 @@ class MigrationGenerator {
     }
 
     private fun compareForeignKeys(
-        tableName: String,
-        oldFKs: List<ForeignKeySchema>,
-        newFKs: List<ForeignKeySchema>
+        tableName: String, oldFKs: List<ForeignKeySchema>, newFKs: List<ForeignKeySchema>
     ): List<String> {
         val changes = mutableListOf<String>()
         val oldMap = oldFKs.associateBy { it.columnName }

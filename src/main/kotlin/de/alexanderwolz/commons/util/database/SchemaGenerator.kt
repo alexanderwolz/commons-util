@@ -1,12 +1,10 @@
 package de.alexanderwolz.commons.util.database
 
 import de.alexanderwolz.commons.log.Logger
-import de.alexanderwolz.commons.util.database.migration.MigrationGenerator
-import de.alexanderwolz.commons.util.database.migration.SqlFileSchemaExtractor
+import de.alexanderwolz.commons.util.database.migration.*
 import de.alexanderwolz.commons.util.database.migration.schema.*
 import de.alexanderwolz.commons.util.database.provider.DefaultSchemaProvider
 import de.alexanderwolz.commons.util.database.provider.SchemaProvider
-import de.alexanderwolz.commons.util.jpa.EntityScanner
 import jakarta.persistence.*
 import java.io.File
 import java.lang.reflect.Field
@@ -34,6 +32,9 @@ class SchemaGenerator(
     private var executionTimestamp: LocalDateTime? = null
 
     private val sqlFileSchemaExtractor = SqlFileSchemaExtractor(outDir)
+    private val indexGenerator = IndexGenerator()
+    private val foreignKeyGenerator = ForeignKeyGenerator()
+    private val tableGenerator = TableSqlGenerator()
 
 
     fun generate() {
@@ -44,8 +45,8 @@ class SchemaGenerator(
             logger.info { "Database Type: $databaseType, UUID Type: $uuidType, Mode: $migrationMode" }
 
             val rawEntities = entityScanner.findEntities()
-            validateUniqueTableNames(rawEntities)
-            val entities = rawEntities.sortedBy { stableSortKey(getTableName(it)) }
+            DatabaseMigrationUtils.validateUniqueTableNames(rawEntities)
+            val entities = rawEntities.sortedBy { stableSortKey(DatabaseMigrationUtils.getTableName(it)) }
 
             when (migrationMode) {
                 MigrationMode.CREATE_ONLY -> generateCreateMode(entities)
@@ -61,22 +62,22 @@ class SchemaGenerator(
 
     private fun generateCreateMode(entities: List<Class<*>>) {
         generateSetupFiles(entities)
-        groupByPartition(entities).forEach { (schema, entitiesInPartition) ->
-            val sorted = entitiesInPartition.sortedBy { stableSortKey(getTableName(it)) }
+        DatabaseMigrationUtils.groupByPartition(entities, provider, outDir).forEach { (schema, entitiesInPartition) ->
+            val sorted = entitiesInPartition.sortedBy { stableSortKey(DatabaseMigrationUtils.getTableName(it)) }
             generateFiles(sorted, schema)
         }
     }
 
     private fun generateAlterMode(entities: List<Class<*>>) {
-        groupByPartition(entities).forEach { (schema, entitiesInPartition) ->
-            val sorted = entitiesInPartition.sortedBy { stableSortKey(getTableName(it)) }
+        DatabaseMigrationUtils.groupByPartition(entities, provider, outDir).forEach { (schema, entitiesInPartition) ->
+            val sorted = entitiesInPartition.sortedBy { stableSortKey(DatabaseMigrationUtils.getTableName(it)) }
             generateAlterScripts(sorted, schema)
         }
     }
 
     private fun generateSmartMode(entities: List<Class<*>>) {
 
-        val entitiesBySchema = groupByPartition(entities)
+        val entitiesBySchema = DatabaseMigrationUtils.groupByPartition(entities, provider, outDir)
 
         val existingTablesBySchema = entitiesBySchema.mapValues { (schema, _) ->
             sqlFileSchemaExtractor.getExistingTables(schema)
@@ -87,7 +88,7 @@ class SchemaGenerator(
 
         entities.forEach { entity ->
             val schema = provider.getFolderFor(entity, outDir)?.trim().orEmpty().ifBlank { "default" }
-            val table = getTableName(entity)
+            val table = DatabaseMigrationUtils.getTableName(entity)
 
             val exists = existingTablesBySchema[schema]?.contains(table) == true
 
@@ -99,9 +100,9 @@ class SchemaGenerator(
             logger.info { "Found ${newEntities.size} new entities -> generating CREATE scripts" }
             generateSetupFiles(newEntities)
 
-            val groupedNew = groupByPartition(newEntities)
+            val groupedNew = DatabaseMigrationUtils.groupByPartition(newEntities, provider, outDir)
             groupedNew.forEach { (schema, entitiesInPartition) ->
-                val sorted = entitiesInPartition.sortedBy { stableSortKey(getTableName(it)) }
+                val sorted = entitiesInPartition.sortedBy { stableSortKey(DatabaseMigrationUtils.getTableName(it)) }
                 generateFiles(sorted, schema)
             }
         }
@@ -109,9 +110,9 @@ class SchemaGenerator(
         if (existingEntities.isNotEmpty()) {
             logger.info { "Found ${existingEntities.size} existing entities -> checking for changes" }
 
-            val groupedExisting = groupByPartition(existingEntities)
+            val groupedExisting = DatabaseMigrationUtils.groupByPartition(existingEntities, provider, outDir)
             groupedExisting.forEach { (schema, entitiesInPartition) ->
-                val sorted = entitiesInPartition.sortedBy { stableSortKey(getTableName(it)) }
+                val sorted = entitiesInPartition.sortedBy { stableSortKey(DatabaseMigrationUtils.getTableName(it)) }
                 generateAlterScripts(sorted, schema)
             }
         }
@@ -124,13 +125,13 @@ class SchemaGenerator(
         val target = prepareTargetDirectory(schema)
         val migrationGen = MigrationGenerator()
 
-        val sortedEntities = entities.sortedBy { stableSortKey(getTableName(it)) }
+        val sortedEntities = entities.sortedBy { stableSortKey(DatabaseMigrationUtils.getTableName(it)) }
         val sortNumberMap = sortedEntities.mapIndexed { index, entity ->
-            getTableName(entity) to (1000 + index).toString().padStart(4, '0')
+            DatabaseMigrationUtils.getTableName(entity) to (1000 + index).toString().padStart(4, '0')
         }.toMap()
 
         entities.forEach { entity ->
-            val table = getTableName(entity)
+            val table = DatabaseMigrationUtils.getTableName(entity)
             val currentSchema = extractCurrentSchema(entity)
 
             val previousSchema = sqlFileSchemaExtractor.loadTableSchema(schema, table)
@@ -178,25 +179,23 @@ class SchemaGenerator(
         val foreignKeys = mutableListOf<ForeignKeySchema>()
 
         val tableAnn = entity.getAnnotation(Table::class.java)
-        val tableName = getTableName(entity)
+        val tableName = DatabaseMigrationUtils.getTableName(entity)
 
         // ----------------------------------------------------------------------------
         //                                COLUMNS
         // ----------------------------------------------------------------------------
-        allPersistentFields(entity).forEach { f ->
-            val colAnn = f.findAnnotationOnFieldOrGetter<Column>(entity)
+        DatabaseMigrationUtils.allPersistentFields(entity).forEach { f ->
+            val colAnn = DatabaseMigrationUtils.findAnnotation<Column>(f, entity)
 
             // ---------- PRIMARY KEY ----------
-            if (f.findAnnotationOnFieldOrGetter<Id>(entity) != null) {
-                val colName = colAnn?.name?.ifBlank { null } ?: toSnakeCase(f.name)
-                val gen = f.findAnnotationOnFieldOrGetter<GeneratedValue>(entity)
+            if (DatabaseMigrationUtils.findAnnotation<Id>(f, entity) != null) {
+                val colName = colAnn?.name?.ifBlank { null } ?: DatabaseMigrationUtils.toSnakeCase(f.name)
+                val gen = DatabaseMigrationUtils.findAnnotation<GeneratedValue>(f, entity)
 
                 val type = when (gen?.strategy) {
-                    GenerationType.UUID ->
-                        if (databaseType == DatabaseType.POSTGRES) "UUID" else "CHAR(36)"
+                    GenerationType.UUID -> if (databaseType == DatabaseType.POSTGRES) "UUID" else "CHAR(36)"
 
-                    GenerationType.IDENTITY ->
-                        if (databaseType == DatabaseType.POSTGRES) "BIGSERIAL" else "BIGINT"
+                    GenerationType.IDENTITY -> if (databaseType == DatabaseType.POSTGRES) "BIGSERIAL" else "BIGINT"
 
                     else -> sqlType(f, colAnn)
                 }
@@ -228,20 +227,18 @@ class SchemaGenerator(
             }
 
             // ---------- RELATIONS (ManyToOne / OneToOne) ----------
-            val relMany = f.findAnnotationOnFieldOrGetter<ManyToOne>(entity)
-            val relOne = f.findAnnotationOnFieldOrGetter<OneToOne>(entity)
+            val relMany = DatabaseMigrationUtils.findAnnotation<ManyToOne>(f, entity)
+            val relOne = DatabaseMigrationUtils.findAnnotation<OneToOne>(f, entity)
             if (relMany != null || relOne != null) {
-                val join = f.findAnnotationOnFieldOrGetter<JoinColumn>(entity)
-                val name = join?.name?.ifBlank { null } ?: "${toSnakeCase(f.name)}_id"
+                val join = DatabaseMigrationUtils.findAnnotation<JoinColumn>(f, entity)
+                val name = join?.name?.ifBlank { null } ?: "${DatabaseMigrationUtils.toSnakeCase(f.name)}_id"
                 val nullable = join?.nullable ?: true
                 val refType = getIdType(f.type)
-                val refTable = getTableName(f.type)
+                val refTable = DatabaseMigrationUtils.getTableName(f.type)
 
                 columns.add(
                     ColumnSchema(
-                        name = name,
-                        type = refType,
-                        nullable = nullable
+                        name = name, type = refType, nullable = nullable
                     )
                 )
 
@@ -257,18 +254,17 @@ class SchemaGenerator(
             }
 
             // ---------- EMBEDDED ----------
-            if (f.findAnnotationOnFieldOrGetter<Embedded>(entity) != null) {
+            if (DatabaseMigrationUtils.findAnnotation<Embedded>(f, entity) != null) {
                 val embType = f.type
-                val prefix = toSnakeCase(f.name) + "_"
+                val prefix = DatabaseMigrationUtils.toSnakeCase(f.name) + "_"
 
                 if (embType.isAnnotationPresent(Embeddable::class.java)) {
-                    embType.declaredFields
-                        .filter { !it.isSynthetic && !Modifier.isStatic(it.modifiers) }
+                    embType.declaredFields.filter { !it.isSynthetic && !Modifier.isStatic(it.modifiers) }
                         .forEach { ef ->
 
                             val subColAnn = ef.getAnnotation(Column::class.java)
-                            val subName = subColAnn?.name?.ifBlank { null }
-                                ?: (prefix + toSnakeCase(ef.name))
+                            val subName =
+                                subColAnn?.name?.ifBlank { null } ?: (prefix + DatabaseMigrationUtils.toSnakeCase(ef.name))
 
                             val type = sqlType(ef, subColAnn)
                             val nullable = subColAnn?.nullable ?: true
@@ -276,10 +272,7 @@ class SchemaGenerator(
 
                             columns.add(
                                 ColumnSchema(
-                                    name = subName,
-                                    type = type,
-                                    nullable = nullable,
-                                    unique = unique
+                                    name = subName, type = type, nullable = nullable, unique = unique
                                 )
                             )
                         }
@@ -290,20 +283,16 @@ class SchemaGenerator(
 
 
             // ---------- NORMAL COLUMNS ----------
-            val colName = colAnn?.name?.ifBlank { null } ?: toSnakeCase(f.name)
+            val colName = colAnn?.name?.ifBlank { null } ?: DatabaseMigrationUtils.toSnakeCase(f.name)
             val nullable = colAnn?.nullable ?: true
             val unique = colAnn?.unique ?: false
             val type = sqlType(f, colAnn)
             // FIX: Include both explicit defaults AND implicit timestamp defaults
-            val defaultValue = extractDefaultValue(colAnn) ?: timestampDefault(colName)
+            val defaultValue = DatabaseMigrationUtils.extractDefaultValue(colAnn) ?: timestampDefault(colName)
 
             columns.add(
                 ColumnSchema(
-                    name = colName,
-                    type = type,
-                    nullable = nullable,
-                    unique = unique,
-                    defaultValue = defaultValue
+                    name = colName, type = type, nullable = nullable, unique = unique, defaultValue = defaultValue
                 )
             )
         }
@@ -320,9 +309,7 @@ class SchemaGenerator(
 
             indexes.add(
                 IndexSchema(
-                    name = name,
-                    columns = cols,
-                    unique = idx.unique
+                    name = name, columns = cols, unique = idx.unique
                 )
             )
         }
@@ -331,14 +318,16 @@ class SchemaGenerator(
         //              INDEXES (ForeignKey indexes + heuristic lookup indexes)
         // ----------------------------------------------------------------------------
 
-        allPersistentFields(entity).forEach { f ->
+        DatabaseMigrationUtils.allPersistentFields(entity).forEach { f ->
 
             // ---------- FK-INDEXE ----------
-            if (f.findAnnotationOnFieldOrGetter<ManyToOne>(entity) != null ||
-                f.findAnnotationOnFieldOrGetter<OneToOne>(entity) != null
+            if (DatabaseMigrationUtils.findAnnotation<ManyToOne>(f, entity) != null || DatabaseMigrationUtils.findAnnotation<OneToOne>(
+                    f,
+                    entity
+                ) != null
             ) {
-                val join = f.findAnnotationOnFieldOrGetter<JoinColumn>(entity)
-                val col = join?.name?.ifBlank { null } ?: "${toSnakeCase(f.name)}_id"
+                val join = DatabaseMigrationUtils.findAnnotation<JoinColumn>(f, entity)
+                val col = join?.name?.ifBlank { null } ?: "${DatabaseMigrationUtils.toSnakeCase(f.name)}_id"
 
                 val customExists = tableAnn?.indexes?.any { idx ->
                     idx.columnList.split(",").any { it.trim() == col }
@@ -349,9 +338,7 @@ class SchemaGenerator(
                     if (indexes.none { it.name == idxName && it.columns == listOf(col) }) {
                         indexes.add(
                             IndexSchema(
-                                name = idxName,
-                                columns = listOf(col),
-                                unique = false
+                                name = idxName, columns = listOf(col), unique = false
                             )
                         )
                     }
@@ -360,17 +347,15 @@ class SchemaGenerator(
             }
 
             // ---------- HEURISTISCHE LOOKUP-INDEXE ----------
-            val colAnn = f.findAnnotationOnFieldOrGetter<Column>(entity)
-            val colName = colAnn?.name?.ifBlank { null } ?: toSnakeCase(f.name)
+            val colAnn = DatabaseMigrationUtils.findAnnotation<Column>(f, entity)
+            val colName = colAnn?.name?.ifBlank { null } ?: DatabaseMigrationUtils.toSnakeCase(f.name)
 
             if (colName in listOf("email", "username", "subject", "code")) {
                 val idxName = "idx_${tableName}_${colName}"
                 if (indexes.none { it.name == idxName && it.columns == listOf(colName) }) {
                     indexes.add(
                         IndexSchema(
-                            name = idxName,
-                            columns = listOf(colName),
-                            unique = false
+                            name = idxName, columns = listOf(colName), unique = false
                         )
                     )
                 }
@@ -378,21 +363,10 @@ class SchemaGenerator(
         }
 
         return TableSchema(
-            columns = columns,
-            indexes = indexes,
-            foreignKeys = foreignKeys
+            columns = columns, indexes = indexes, foreignKeys = foreignKeys
         )
     }
 
-
-    private fun extractDefaultValue(colAnn: Column?): String? {
-        if (colAnn == null) return null
-        val def = colAnn.columnDefinition
-        if (def.isBlank()) return null
-
-        val defaultRegex = """DEFAULT\s+(.+)""".toRegex(RegexOption.IGNORE_CASE)
-        return defaultRegex.find(def)?.groupValues?.get(1)?.trim()
-    }
 
     private fun sqlType(field: Field, col: Column?): String = when (databaseType) {
         DatabaseType.POSTGRES -> sqlTypePg(field, col)
@@ -483,20 +457,17 @@ class SchemaGenerator(
         if (entities.isEmpty()) return
 
         val target = prepareTargetDirectory(schema)
-        val tableGen = TableSqlGenerator()
-        val fkGen = ForeignKeyGenerator()
-        val idxGen = IndexGenerator()
 
         entities.forEachIndexed { index, entity ->
-            val table = getTableName(entity)
-            val sql = formatCreateTableSql(tableGen.generateCreateTableSql(entity, table))
+            val table = DatabaseMigrationUtils.getTableName(entity)
+            val sql = DatabaseMigrationUtils.formatCreateTableSql(tableGenerator.generateCreateTableSql(entity, table))
             val sortNumber = (1000 + index).toString().padStart(4, '0')
             writeMigrationFile(
                 targetDir = target, sortNumber = sortNumber, baseName = "create_${table}_table", content = sql
             )
         }
 
-        val fkList = fkGen.generateAllForeignKeys(entities)
+        val fkList = foreignKeyGenerator.generateAllForeignKeys(entities)
         if (fkList.isNotEmpty()) {
             val sql = "-- Foreign Keys\n" + fkList.joinToString("\n\n")
             writeMigrationFile(
@@ -504,58 +475,12 @@ class SchemaGenerator(
             )
         }
 
-        val idxList = idxGen.generateAllIndexes(entities)
+        val idxList = indexGenerator.generateAllIndexes(entities)
         if (idxList.isNotEmpty()) {
             val sql = "-- Indexes\n" + idxList.joinToString("\n\n")
             writeMigrationFile(
                 targetDir = target, sortNumber = "9000", baseName = "add_indexes", content = formatPlainSql(sql)
             )
-        }
-    }
-
-    private fun formatCreateTableSql(sql: String): String {
-        val lines = sql.trim().lines()
-
-        val startIdx = lines.indexOfFirst { it.contains("(") }
-        val endIdx = lines.indexOfLast { it.trim() == ");" }
-
-        if (startIdx == -1 || endIdx == -1) return sql.trim() + "\n"
-
-        val header = lines.subList(0, startIdx + 1)
-        val body = lines.subList(startIdx + 1, endIdx)
-        val footer = lines.subList(endIdx, lines.size)
-
-        val cleanBody = body.map { it.trim().removeSuffix(",") }.filter { it.isNotBlank() }
-        val aligned = alignSqlColumns(cleanBody).toMutableList()
-
-        aligned.forEachIndexed { i, _ ->
-            aligned[i] = if (i == aligned.lastIndex) aligned[i] else aligned[i] + ","
-        }
-
-        return (header + aligned + footer).joinToString("\n").trim() + "\n"
-    }
-
-    private fun alignSqlColumns(lines: List<String>): List<String> {
-        data class Col(val name: String, val type: String, val rest: String?)
-
-        val parsed = lines.map { line ->
-            val parts = line.trim().split(Regex("\\s+"), limit = 3)
-            Col(
-                name = parts.getOrNull(0) ?: "", type = parts.getOrNull(1) ?: "", rest = parts.getOrNull(2)
-            )
-        }
-
-        val maxName = parsed.maxOf { it.name.length }
-        val maxType = parsed.maxOf { it.type.length }
-
-        return parsed.map { col ->
-            buildString {
-                append("    ")
-                append(col.name.padEnd(maxName))
-                append("    ")
-                append(col.type.padEnd(maxType))
-                if (col.rest != null) append(" ${col.rest}")
-            }
         }
     }
 
@@ -569,70 +494,14 @@ class SchemaGenerator(
         }
     }
 
-    private fun validateUniqueTableNames(entities: List<Class<*>>) {
-        val tableNames = entities.map { getTableName(it) }
-        val duplicates = tableNames.groupingBy { it }.eachCount().filter { it.value > 1 }
-        if (duplicates.isNotEmpty()) {
-            throw IllegalStateException("Duplicate table names detected: ${duplicates.keys}")
-        }
-    }
-
-    internal fun groupByPartition(entities: List<Class<*>>): Map<String, List<Class<*>>> {
-        val result = mutableMapOf<String, MutableList<Class<*>>>()
-        for (e in entities) {
-            val folder = provider.getFolderFor(e, outDir)?.trim().orEmpty()
-            val effective = folder.ifBlank { "default" }
-            result.computeIfAbsent(effective) { mutableListOf() }.add(e)
-        }
-        return result
-    }
-
-    private fun getTableName(entity: Class<*>): String {
-        val tableAnn = entity.getAnnotation(Table::class.java)
-        return tableAnn?.name?.ifBlank { null } ?: toSnakeCase(entity.simpleName)
-    }
 
     private fun stableSortKey(tableName: String): String {
         return tableName.lowercase()
     }
 
-    private fun toSnakeCase(camelCase: String): String {
-        return camelCase.replace(Regex("([a-z])([A-Z])"), "$1_$2").lowercase()
-    }
-
-    private fun allPersistentFields(clazz: Class<*>): List<Field> {
-        val fields = mutableListOf<Field>()
-        var current: Class<*>? = clazz
-        while (current != null && current != Any::class.java) {
-            current.declaredFields.forEach { field ->
-                if (!Modifier.isStatic(field.modifiers) && !Modifier.isTransient(field.modifiers) && field.getAnnotation(
-                        Transient::class.java
-                    ) == null
-                ) {
-                    fields.add(field)
-                }
-            }
-            current = current.superclass
-        }
-        return fields
-    }
-
-    private inline fun <reified T : Annotation> Field.findAnnotationOnFieldOrGetter(entityClass: Class<*>): T? {
-        this.getAnnotation(T::class.java)?.let { return it }
-
-        val getterName = "get${this.name.replaceFirstChar { it.uppercase() }}"
-        try {
-            val getter = entityClass.getMethod(getterName)
-            return getter.getAnnotation(T::class.java)
-        } catch (_: NoSuchMethodException) {
-        }
-
-        return null
-    }
-
     private fun Class<*>.idField(): Field? {
-        return allPersistentFields(this).firstOrNull {
-            it.findAnnotationOnFieldOrGetter<Id>(this) != null
+        return DatabaseMigrationUtils.allPersistentFields(this).firstOrNull {
+            DatabaseMigrationUtils.findAnnotation<Id>(it, this) != null
         }
     }
 
@@ -691,13 +560,13 @@ class SchemaGenerator(
         fun generateCreateTableSql(entity: Class<*>, tableName: String): String {
             val cols = mutableListOf<ColumnDef>()
 
-            allPersistentFields(entity).forEach { f ->
-                val colAnn = f.findAnnotationOnFieldOrGetter<Column>(entity)
+            DatabaseMigrationUtils.allPersistentFields(entity).forEach { f ->
+                val colAnn = DatabaseMigrationUtils.findAnnotation<Column>(f, entity)
 
                 // ----- ID FIELD -----
-                if (f.findAnnotationOnFieldOrGetter<Id>(entity) != null) {
-                    val colName = colAnn?.name?.ifBlank { null } ?: toSnakeCase(f.name)
-                    val gen = f.findAnnotationOnFieldOrGetter<GeneratedValue>(entity)
+                if (DatabaseMigrationUtils.findAnnotation<Id>(f, entity) != null) {
+                    val colName = colAnn?.name?.ifBlank { null } ?: DatabaseMigrationUtils.toSnakeCase(f.name)
+                    val gen = DatabaseMigrationUtils.findAnnotation<GeneratedValue>(f, entity)
 
                     val type = when (gen?.strategy) {
                         GenerationType.UUID -> if (databaseType == DatabaseType.POSTGRES) "UUID" else "CHAR(36)"
@@ -718,11 +587,11 @@ class SchemaGenerator(
                 }
 
                 // ----- RELATIONS -----
-                val relMany = f.findAnnotationOnFieldOrGetter<ManyToOne>(entity)
-                val relOne = f.findAnnotationOnFieldOrGetter<OneToOne>(entity)
+                val relMany = DatabaseMigrationUtils.findAnnotation<ManyToOne>(f, entity)
+                val relOne = DatabaseMigrationUtils.findAnnotation<OneToOne>(f, entity)
                 if (relMany != null || relOne != null) {
-                    val join = f.findAnnotationOnFieldOrGetter<JoinColumn>(entity)
-                    val name = join?.name?.ifBlank { null } ?: "${toSnakeCase(f.name)}_id"
+                    val join = DatabaseMigrationUtils.findAnnotation<JoinColumn>(f, entity)
+                    val name = join?.name?.ifBlank { null } ?: "${DatabaseMigrationUtils.toSnakeCase(f.name)}_id"
                     val nullable = join?.nullable ?: true
                     val refType = getIdType(f.type)
 
@@ -732,19 +601,21 @@ class SchemaGenerator(
                 }
 
                 // Skip OneToMany or ManyToMany
-                if (f.findAnnotationOnFieldOrGetter<OneToMany>(entity) != null || f.findAnnotationOnFieldOrGetter<ManyToMany>(
-                        entity
+                if (DatabaseMigrationUtils.findAnnotation<OneToMany>(
+                        f, entity
+                    ) != null || DatabaseMigrationUtils.findAnnotation<ManyToMany>(
+                        f, entity
                     ) != null
                 ) return@forEach
 
                 // ----- EMBEDDED -----
-                if (f.findAnnotationOnFieldOrGetter<Embedded>(entity) != null) {
+                if (DatabaseMigrationUtils.findAnnotation<Embedded>(f, entity) != null) {
                     cols.addAll(resolveEmbeddedColumns(f))
                     return@forEach
                 }
 
                 // ----- NORMAL COLUMNS -----
-                val name = colAnn?.name?.ifBlank { null } ?: toSnakeCase(f.name)
+                val name = colAnn?.name?.ifBlank { null } ?: DatabaseMigrationUtils.toSnakeCase(f.name)
                 val type = sqlType(f, colAnn)
 
                 val cons = mutableListOf<String>()
@@ -811,7 +682,7 @@ class SchemaGenerator(
         }
 
         private fun resolveEmbeddedColumns(field: Field): List<ColumnDef> {
-            val prefix = toSnakeCase(field.name) + "_"
+            val prefix = DatabaseMigrationUtils.toSnakeCase(field.name) + "_"
             val type = field.type
 
             if (!type.isAnnotationPresent(Embeddable::class.java)) return emptyList()
@@ -831,7 +702,7 @@ class SchemaGenerator(
                 val colAnn = override ?: ef.getAnnotation(Column::class.java)
 
                 val colName = override?.name?.ifBlank { null } ?: colAnn?.name?.ifBlank { null }
-                ?: (prefix + toSnakeCase(ef.name))
+                ?: (prefix + DatabaseMigrationUtils.toSnakeCase(ef.name))
 
                 val nullable = colAnn?.nullable ?: true
                 val typeStr = sqlType(ef, colAnn)
@@ -856,108 +727,6 @@ class SchemaGenerator(
     private fun timestampDefault(col: String): String? =
         if (col == "created_at" || col == "updated_at") "DEFAULT CURRENT_TIMESTAMP" else null
 
-    private inner class ForeignKeyGenerator {
-
-        fun generateAllForeignKeys(entities: List<Class<*>>): List<String> {
-            val out = mutableListOf<String>()
-
-            entities.forEach { e ->
-                val table = getTableName(e)
-
-                allPersistentFields(e).forEach { f ->
-                    val rel =
-                        f.findAnnotationOnFieldOrGetter<ManyToOne>(e) ?: f.findAnnotationOnFieldOrGetter<OneToOne>(e)
-                    if (rel == null) return@forEach
-
-                    val join = f.findAnnotationOnFieldOrGetter<JoinColumn>(e)
-                    val colName = join?.name?.ifBlank { null } ?: "${toSnakeCase(f.name)}_id"
-                    val refTable = getTableName(f.type)
-                    val fkName = join?.foreignKey?.name?.ifBlank { null } ?: "fk_${table}_${colName}"
-                    val nullable = join?.nullable ?: true
-                    val deleteRule = if (nullable) "SET NULL" else "CASCADE"
-
-                    out.add(
-                        buildString {
-                            appendLine("-- Foreign key: $table.$colName -> $refTable.id")
-                            appendLine("ALTER TABLE $table")
-                            appendLine("    ADD CONSTRAINT $fkName")
-                            appendLine("    FOREIGN KEY ($colName)")
-                            appendLine("    REFERENCES $refTable(id)")
-                            appendLine("    ON DELETE $deleteRule;")
-                        })
-                }
-            }
-
-            return out
-        }
-    }
-
-    private inner class IndexGenerator {
-
-        fun generateAllIndexes(entities: List<Class<*>>): List<String> {
-            val out = mutableListOf<String>()
-
-            entities.forEach { e ->
-                val table = getTableName(e)
-                val tableAnn = e.getAnnotation(Table::class.java)
-
-                // ------ custom indexes via @Table(indexes = …) ------
-                tableAnn?.indexes?.forEach { idx ->
-                    val name = idx.name.ifBlank {
-                        "idx_${table}_${idx.columnList.replace(",", "_").replace(" ", "")}"
-                    }
-                    val unique = if (idx.unique) "UNIQUE " else ""
-                    out.add(
-                        buildString {
-                            appendLine("-- Index on $table(${idx.columnList})")
-                            append("CREATE ")
-                            append(unique)
-                            append("INDEX $name ON $table (${idx.columnList});")
-                        })
-                }
-
-                // ------ Foreign-key indexes + heuristics ------
-                allPersistentFields(e).forEach { f ->
-
-                    // FK index
-                    if (f.findAnnotationOnFieldOrGetter<ManyToOne>(e) != null || f.findAnnotationOnFieldOrGetter<OneToOne>(
-                            e
-                        ) != null
-                    ) {
-                        val join = f.findAnnotationOnFieldOrGetter<JoinColumn>(e)
-                        val col = join?.name?.ifBlank { null } ?: "${toSnakeCase(f.name)}_id"
-
-                        // check if custom index already exists
-                        val custom = tableAnn?.indexes?.any { idx ->
-                            idx.columnList.split(",").any { it.trim() == col }
-                        } ?: false
-
-                        if (!custom) {
-                            out.add(
-                                buildString {
-                                    appendLine("-- Index on foreign key: $table.$col")
-                                    appendLine("CREATE INDEX idx_${table}_${col} ON $table ($col);")
-                                })
-                        }
-                        return@forEach
-                    }
-
-                    // heuristic indexes for common lookup fields
-                    val colAnn = f.findAnnotationOnFieldOrGetter<Column>(e)
-                    val name = colAnn?.name?.ifBlank { null } ?: toSnakeCase(f.name)
-                    if (name in listOf("email", "username", "subject", "code")) {
-                        out.add(
-                            buildString {
-                                appendLine("-- Lookup index on $table.$name")
-                                appendLine("CREATE INDEX idx_${table}_${name} ON $table ($name);")
-                            })
-                    }
-                }
-            }
-
-            return out.distinct()
-        }
-    }
 
     internal fun testWriteFileForTest(
         dir: File, baseName: String, sortNumber: String, content: String
@@ -975,7 +744,7 @@ class SchemaGenerator(
 
         val target = prepareTargetDirectory(schema)
         val migrationGen = MigrationGenerator()
-        val table = getTableName(entityClass)
+        val table = DatabaseMigrationUtils.getTableName(entityClass)
 
         val diff = migrationGen.compareSchemasAndGenerateMigration(
             tableName = table, entityClass = entityClass, oldSchema = oldSchema, newSchema = newSchema
@@ -987,8 +756,8 @@ class SchemaGenerator(
         }
 
         val allEntities = entityScanner.findEntities()
-        val sortedEntities = allEntities.sortedBy { stableSortKey(getTableName(it)) }
-        val sortNumber = sortedEntities.indexOfFirst { getTableName(it) == table }
+        val sortedEntities = allEntities.sortedBy { stableSortKey(DatabaseMigrationUtils.getTableName(it)) }
+        val sortNumber = sortedEntities.indexOfFirst { DatabaseMigrationUtils.getTableName(it) == table }
             .let { if (it >= 0) (1000 + it).toString().padStart(4, '0') else "9999" }
 
         val sql = formatPlainSql(diff)

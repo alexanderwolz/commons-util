@@ -1,11 +1,10 @@
 package de.alexanderwolz.commons.util.database
 
-import de.alexanderwolz.commons.util.jpa.entity.fu.SampleEntity
+import de.alexanderwolz.commons.util.database.entity.fu.SampleEntity
 import de.alexanderwolz.commons.util.database.migration.SqlFileSchemaExtractor
 import de.alexanderwolz.commons.util.database.migration.schema.ColumnSchema
 import de.alexanderwolz.commons.util.database.migration.schema.IndexSchema
 import de.alexanderwolz.commons.util.database.migration.schema.TableSchema
-import de.alexanderwolz.commons.util.jpa.EntityScannerTest
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
